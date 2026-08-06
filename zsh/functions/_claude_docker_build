@@ -1,116 +1,142 @@
 #!/usr/bin/env zsh
-# _claude_docker_build <arch>
+# _claude_docker_build <arch> <variant>
 #
-# Build the claude-code-full-<arch> image. <arch> is arm64 or amd64.
+# Build the image for one (arch, variant) pair. <arch> is arm64 or amd64,
+# <variant> is base or playwright. See _claude_docker_ctx for the full matrix.
 #
 # The image bakes in a whitelist of the host's non-secret Claude Code config
 # (~/.claude.json, CLAUDE.md, settings.json, skills, commands, plugins) so a
 # container starts with the same setup as the host. Secrets are NOT baked: the
 # credentials file and all cloud/SSH credentials are mounted at run time.
+#
+# The playwright variant builds FROM the base image (docker/Dockerfile.playwright
+# takes ARG BASE_IMAGE), so the base image for the same arch must already exist.
 
 emulate -L zsh
-setopt local_options
+# noksharrays: array construction (build_args, tools) assumes 1-based indexing.
+setopt local_options noksharrays
 
-local arch="$1"
-local platform="linux/$arch"
-local image="claude-code-full-$arch"
-local plugin_dir="${CLAUDE_DOCKER_PLUGIN_DIR:-${0:A:h:h}}"
-local dockerfile="${CLAUDE_DOCKER_DOCKERFILE:-$plugin_dir/docker/Dockerfile}"
+_claude_docker_ctx "$1" "$2" || return 1
 
+_claude_docker_check docker-bin || {
+    _claude_docker_err "docker is not installed" "${_tc_check_fix[@]}"
+    return 1
+}
+_claude_docker_check docker-daemon || {
+    _claude_docker_err "docker daemon is not reachable" "${_tc_check_fix[@]}"
+    return 1
+}
+_claude_docker_check claude-json || {
+    _claude_docker_err "$_tc_check_detail" "${_tc_check_fix[@]}"
+    return 1
+}
+
+# The playwright variant is FROM'd on top of the base image for the same arch;
+# building it without that base image already present is the most likely user
+# mistake, so catch it loudly here rather than let docker build fail deep in a
+# multi-stage build.
+local base_image="claude-code-full-$_tc_arch"
+if [[ "$_tc_variant" == playwright ]]; then
+    _claude_docker_check image "$base_image" || {
+        _claude_docker_err "$base_image not built — build it first" "${_tc_check_fix[@]}"
+        return 1
+    }
+fi
+
+local dockerfile
+dockerfile="$(_claude_docker_opt dockerfile CLAUDE_DOCKER_DOCKERFILE "$_tc_dockerfile")"
 if [[ ! -f "$dockerfile" ]]; then
-    print -u2 "ERROR: Dockerfile not found at $dockerfile"
-    print -u2 "       Set CLAUDE_DOCKER_DOCKERFILE to point at one."
-    return 1
-fi
-
-if [[ ! -f "$HOME/.claude.json" ]]; then
-    print -u2 "ERROR: ~/.claude.json not found — run 'claude' on the host once first."
-    return 1
-fi
-
-if ! jq . "$HOME/.claude.json" >/dev/null 2>&1; then
-    print -u2 "ERROR: ~/.claude.json is not valid JSON"
+    _claude_docker_err "Dockerfile not found at $dockerfile" \
+        "zstyle ':omz:plugins:tupperclaude' dockerfile /path/to/Dockerfile"
     return 1
 fi
 
 # Building an amd64 image on Apple Silicon works, but every RUN executes under
 # QEMU emulation. Say so up front rather than let it look like a hang.
-if [[ "$arch" == "amd64" && "$(uname -m)" == "arm64" ]]; then
+if [[ "$_tc_arch" == amd64 && "$(uname -m)" == arm64 ]]; then
     print "Note: cross-building linux/amd64 on Apple Silicon — RUN steps are QEMU-emulated and slow."
 fi
 
 local tmpdir
-tmpdir="$(mktemp -d)" || return 1
-local settings_dir="$tmpdir/claude-settings"
-mkdir -p "$settings_dir/plugins/marketplaces" "$settings_dir/plugins/cache" \
-         "$settings_dir/skills" "$settings_dir/commands"
+tmpdir="$(command mktemp -d)" || return 1
+local build_status
+{
+    local settings_dir="$tmpdir/claude-settings"
+    command mkdir -p "$settings_dir/plugins/marketplaces" "$settings_dir/plugins/cache" \
+             "$settings_dir/skills" "$settings_dir/commands"
 
-# Copy the non-secret config whitelist into the build context.
-cp "$HOME/.claude.json" "$tmpdir/claude.json"
+    # Copy the non-secret config whitelist into the build context.
+    command cp "$HOME/.claude.json" "$tmpdir/claude.json"
 
-# The host config runs MCP servers via macOS Homebrew paths (e.g.
-# /opt/homebrew/bin/uvx), which do not exist in the Linux image. Rewrite them to
-# the container paths the Dockerfile installs.
-_claude_docker_sed_i 's#/opt/homebrew/bin/uvx#/usr/local/bin/uvx#g' "$tmpdir/claude.json"
-_claude_docker_sed_i 's#/opt/homebrew/bin/uv#/usr/local/bin/uv#g'   "$tmpdir/claude.json"
+    # The host config runs MCP servers via macOS Homebrew paths (e.g.
+    # /opt/homebrew/bin/uvx), which do not exist in the Linux image. Rewrite them
+    # to the container paths the Dockerfile installs.
+    _claude_docker_sed_i 's#/opt/homebrew/bin/uvx#/usr/local/bin/uvx#g' "$tmpdir/claude.json"
+    _claude_docker_sed_i 's#/opt/homebrew/bin/uv#/usr/local/bin/uv#g'   "$tmpdir/claude.json"
 
-cp    "$HOME/.claude/CLAUDE.md"      "$settings_dir/CLAUDE.md"      2>/dev/null
-cp    "$HOME/.claude/settings.json"  "$settings_dir/settings.json"  2>/dev/null
-cp -R "$HOME/.claude/skills/."       "$settings_dir/skills/"        2>/dev/null
-cp -R "$HOME/.claude/commands/."     "$settings_dir/commands/"      2>/dev/null
-cp -R "$HOME/.claude/plugins/marketplaces/." "$settings_dir/plugins/marketplaces/" 2>/dev/null
-cp -R "$HOME/.claude/plugins/cache/."        "$settings_dir/plugins/cache/"        2>/dev/null
+    command cp    "$HOME/.claude/CLAUDE.md"      "$settings_dir/CLAUDE.md"      2>/dev/null
+    command cp    "$HOME/.claude/settings.json"  "$settings_dir/settings.json"  2>/dev/null
+    command cp -R "$HOME/.claude/skills/."       "$settings_dir/skills/"        2>/dev/null
+    command cp -R "$HOME/.claude/commands/."     "$settings_dir/commands/"      2>/dev/null
+    command cp -R "$HOME/.claude/plugins/marketplaces/." "$settings_dir/plugins/marketplaces/" 2>/dev/null
+    command cp -R "$HOME/.claude/plugins/cache/."        "$settings_dir/plugins/cache/"        2>/dev/null
 
-local f
-for f in installed_plugins.json known_marketplaces.json plugin-catalog-cache.json; do
-    cp "$HOME/.claude/plugins/$f" "$settings_dir/plugins/$f" 2>/dev/null
-    # These files record absolute host paths; rewrite them to the container home.
-    [[ -f "$settings_dir/plugins/$f" ]] && \
-        _claude_docker_sed_i "s#$HOME/.claude#/home/agent/.claude#g" "$settings_dir/plugins/$f"
-done
+    local f
+    for f in installed_plugins.json known_marketplaces.json plugin-catalog-cache.json; do
+        command cp "$HOME/.claude/plugins/$f" "$settings_dir/plugins/$f" 2>/dev/null
+        # These files record absolute host paths; rewrite them to the container home.
+        [[ -f "$settings_dir/plugins/$f" ]] && \
+            _claude_docker_sed_i "s#$HOME/.claude#/home/agent/.claude#g" "$settings_dir/plugins/$f"
+    done
 
-cp "$dockerfile" "$tmpdir/Dockerfile"
+    command cp "$dockerfile" "$tmpdir/Dockerfile"
 
-# The baked config is your own. Flag the one case that surprises people: an MCP
-# server configured with an inline API key ends up inside the image layer.
-if grep -qiE '"(api_?key|token|secret|password)"[[:space:]]*:' "$tmpdir/claude.json"; then
-    print "Warning: ~/.claude.json contains key/token-looking fields; they will be baked into $image."
-    print "         Keep this image local — do not push it to a shared or public registry."
-fi
+    # The baked config is your own. Flag the one case that surprises people: an
+    # MCP server configured with an inline API key ends up inside the image layer.
+    if grep -qiE '"(api_?key|token|secret|password)"[[:space:]]*:' "$tmpdir/claude.json"; then
+        print "Warning: ~/.claude.json contains key/token-looking fields; they will be baked into $_tc_image."
+        print "         Keep this image local — do not push it to a shared or public registry."
+    fi
 
-local build_date="$(date +%Y-%m-%dT%H:%M:%S)"
-local -a build_args=(--build-arg "BUILD_DATE=$build_date")
-if [[ -n "${CLAUDE_DOCKER_INCLUDE_AWS:-}" ]]; then
-    build_args+=(--build-arg INCLUDE_AWS=1)
-    print "Including AWS CLI v2 in the image (CLAUDE_DOCKER_INCLUDE_AWS is set)."
-fi
+    local build_date="$(date +%Y-%m-%dT%H:%M:%S)"
+    local -a build_args=(--build-arg "BUILD_DATE=$build_date")
+    if _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
+        build_args+=(--build-arg INCLUDE_AWS=1)
+        print "Including AWS CLI v2 in the image (aws option is set)."
+    fi
+    if [[ "$_tc_variant" == playwright ]]; then
+        build_args+=(--build-arg "BASE_IMAGE=$base_image")
+    fi
 
-print "Building $image ($platform)..."
-docker build --platform "$platform" "${build_args[@]}" -t "$image" "$tmpdir"
-local build_status=$?
-rm -rf "$tmpdir"
+    print "Building $_tc_image ($_tc_platform)..."
+    command docker build --platform "$_tc_platform" "${build_args[@]}" -t "$_tc_image" -f "$tmpdir/Dockerfile" "$tmpdir"
+    build_status=$?
+} always {
+    command rm -rf -- "$tmpdir"
+}
 
 if (( build_status != 0 )); then
-    print -u2 "ERROR: Docker build failed"
+    _claude_docker_err "docker build failed for $_tc_image"
     return 1
 fi
 
-docker image prune -f >/dev/null
+command docker image prune -f >/dev/null
 
 print ""
-print "Tool versions in $image:"
+print "Tool versions in $_tc_image:"
 local -a tools=(
     "claude --version" "gh --version" "gcloud --version" "rg --version"
     "yq --version" "tmux -V" "uv --version" "psql --version" "mysql --version"
     "deno --version" "linear --version" "rustc --version" "cargo --version"
     "rust-analyzer --version" "pulumi version" "tailscale version"
 )
-[[ -n "${CLAUDE_DOCKER_INCLUDE_AWS:-}" ]] && tools+=("aws --version")
+_claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS && tools+=("aws --version")
+[[ "$_tc_variant" == playwright ]] && tools+=("playwright --version")
 
 local tool
 for tool in $tools; do
-    docker run --rm --platform "$platform" "$image" ${=tool} 2>/dev/null | head -1
+    command docker run --rm --platform "$_tc_platform" "$_tc_image" ${=tool} 2>/dev/null | head -1
 done
 
 print ""
-print "Success! $image built on $build_date"
+print "Success! $_tc_image built on $build_date"

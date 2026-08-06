@@ -121,13 +121,20 @@ op-signin)
     ;;
 
 ssh-agent)
-    if [[ -S /run/host-services/ssh-auth.sock ]]; then
-        _tc_check_detail='Docker Desktop socket present'
+    # The forwarded agent socket lives at /run/host-services/ssh-auth.sock —
+    # a path inside Docker Desktop's Linux VM, NOT on the macOS host. It cannot
+    # be stat'ed from here, so testing for it would always fail. What actually
+    # determines whether forwarding works is whether the daemon is Docker
+    # Desktop, so check that instead.
+    local engine
+    engine="$(command docker info --format '{{.OperatingSystem}}' 2>/dev/null)"
+    if [[ $engine == "Docker Desktop" ]]; then
+        _tc_check_detail='Docker Desktop — agent forwarding available'
         return 0
     fi
-    _tc_check_detail='Docker Desktop ssh-agent socket missing'
-    _tc_check_fix=('SSH agent forwarding into the container will not work.'
-                   'This socket is provided by Docker Desktop for Mac only.')
+    _tc_check_detail="engine is '${engine:-unknown}', not Docker Desktop"
+    _tc_check_fix=('SSH agent forwarding into the container needs Docker Desktop for Mac.'
+                   'Everything else still works; git over SSH inside the sandbox will not.')
     return 1
     ;;
 

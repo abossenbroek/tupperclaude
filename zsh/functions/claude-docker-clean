@@ -1,0 +1,99 @@
+#!/usr/bin/env zsh
+# claude-docker-clean [-y|--yes]
+#
+# Tear down every tupperclaude-managed Docker resource: stop running
+# sandboxes, remove all four base/playwright image tags, remove the
+# Tailscale sidecars and both their state and socket volumes, then prune
+# dangling images. Destructive — prints exactly what it will do first, and
+# asks for confirmation unless -y/--yes is given.
+#
+# Preserves ~/.config/claude-docker/.credentials.json and
+# ~/.config/claude-docker-playwright/.credentials.json (the Docker-only
+# Claude logins), so rebuilding the image doesn't force a re-login.
+
+emulate -L zsh
+# noksharrays: the counts and indexing below assume 1-based zsh indexing.
+setopt local_options noksharrays
+
+local yes=0 arg
+for arg in "$@"; do
+    case $arg in
+        -y|--yes) yes=1 ;;
+        *) _claude_docker_err "unknown argument '$arg'" "usage: claude-docker-clean [-y|--yes]"; return 1 ;;
+    esac
+done
+
+local -a images=(
+    claude-code-full-arm64
+    claude-code-full-amd64
+    claude-code-full-playwright-arm64
+    claude-code-full-playwright-amd64
+)
+
+local -a sandboxes sidecars volumes
+sandboxes=(${(f)"$(command docker ps -q --filter label=tupperclaude.arch)"})
+sidecars=(${(f)"$(command docker ps -aq --filter 'name=^claude-ts-')"})
+volumes=(${(f)"$(command docker volume ls -q --filter 'name=^claude-ts-state-' --filter 'name=^claude-ts-sock-')"})
+
+print -r -- "tupperclaude: this will:"
+print -r -- "  stop ${#sandboxes} running sandbox container(s)"
+print -r -- "  remove image tags: ${(j:, :)images}"
+print -r -- "  remove ${#sidecars} Tailscale sidecar container(s)"
+# Name them. The `claude-ts-` filter also matches the legacy `claude-ts-q-`
+# sidecars created by the older fish functions, which may be in active use by a
+# session running in another shell — so show exactly what is about to go rather
+# than only a count.
+command docker ps -a --filter 'name=^claude-ts-' --format '{{.Names}}  [{{.Status}}]' \
+    | command sed 's/^/    /'
+print -r -- "  remove ${#volumes} sidecar volume(s) (state + socket)"
+print -r -- "  prune dangling images"
+print -r -- ""
+print -r -- "Preserved (not touched):"
+print -r -- "  ~/.config/claude-docker/.credentials.json"
+print -r -- "  ~/.config/claude-docker-playwright/.credentials.json"
+
+if (( ! yes )); then
+    print -r -- ""
+    local REPLY
+    read -q "REPLY?Continue? [y/N] "
+    print -r -- ""
+    if [[ "$REPLY" != y ]]; then
+        print -r -- "tupperclaude: aborted, nothing removed."
+        return 1
+    fi
+fi
+
+if (( ${#sandboxes} )); then
+    print -r -- "Stopping sandboxes…"
+    command docker stop "${sandboxes[@]}" >/dev/null
+fi
+
+print -r -- "Removing images…"
+local img
+for img in "${images[@]}"; do
+    if command docker rmi "$img" >/dev/null 2>&1; then
+        print -r -- "  removed $img"
+    else
+        print -r -- "  not present, skipping: $img"
+    fi
+done
+
+if (( ${#sidecars} )); then
+    print -r -- "Removing Tailscale sidecars…"
+    command docker rm -f "${sidecars[@]}" >/dev/null
+fi
+
+if (( ${#volumes} )); then
+    print -r -- "Removing sidecar volumes…"
+    command docker volume rm "${volumes[@]}" >/dev/null
+fi
+
+print -r -- "Pruning dangling images…"
+command docker image prune -f >/dev/null
+
+print -r -- ""
+print -r -- "Done. Docker-only Claude credentials preserved at:"
+print -r -- "  ~/.config/claude-docker/.credentials.json"
+print -r -- "  ~/.config/claude-docker-playwright/.credentials.json"
+print -r -- "To clear them: rm ~/.config/claude-docker/.credentials.json ~/.config/claude-docker-playwright/.credentials.json"
+print -r -- "Run claude-docker-arm-build / claude-docker-amd64-build (and their -playwright siblings) to rebuild."

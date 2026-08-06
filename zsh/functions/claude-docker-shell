@@ -1,0 +1,39 @@
+#!/usr/bin/env zsh
+# claude-docker-shell [cmd...]
+#
+# Open an extra shell inside the sandbox already running for the current
+# directory, without disturbing its tmux session. With no arguments this
+# runs an interactive bash; any arguments are exec'd inside the container
+# instead.
+
+emulate -L zsh
+# noksharrays: the indexing below assumes 1-based zsh indexing.
+setopt local_options noksharrays
+
+local -a matches
+matches=(${(f)"$(command docker ps --filter "label=tupperclaude.dir=$PWD" --format '{{.ID}}'$'\t''{{.Names}}')"})
+
+if (( ${#matches} == 0 )); then
+    _claude_docker_err "no sandbox is running for $PWD" \
+        "claude-docker-arm     # start one (or claude-docker-amd64)" \
+        "claude-docker-status  # see what is running elsewhere"
+    return 1
+fi
+
+if (( ${#matches} > 1 )); then
+    local -a fixes
+    local m
+    for m in "${matches[@]}"; do
+        fixes+=("docker exec -it ${m##*$'\t'} bash")
+    done
+    _claude_docker_err "multiple sandboxes are running for $PWD — run one of:" "${fixes[@]}"
+    return 1
+fi
+
+local id="${matches[1]%%$'\t'*}"
+
+if (( $# > 0 )); then
+    command docker exec -it "$id" "$@"
+else
+    command docker exec -it "$id" bash
+fi

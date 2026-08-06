@@ -1,0 +1,5 @@
+#!/usr/bin/env zsh
+# Run Claude Code in the linux/amd64 browser-capable (Playwright) container:
+# native on Intel Macs, QEMU-emulated on Apple Silicon. The base amd64 image
+# must already be built. Extra args pass through to claude.
+_claude_docker_run amd64 playwright "$@"

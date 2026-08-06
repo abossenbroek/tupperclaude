@@ -1,0 +1,53 @@
+#!/usr/bin/env zsh
+# claude-docker-status
+#
+# Table of every tupperclaude sandbox running right now, across ALL
+# directories: which directory, which arch/variant, how long it has been up,
+# and whether its Tailscale sidecar is genuinely online.
+#
+# Exists because a sidecar can keep its 100.x address and report
+# BackendState=Running while resolving nothing (see _claude_ts_online) — this
+# surfaces that across every session at once, not just the one you're in.
+
+emulate -L zsh
+# noksharrays: the field-splitting below assumes 1-based zsh indexing.
+setopt local_options noksharrays
+
+local fmt='{{.Label "tupperclaude.dir"}}'$'\t''{{.Label "tupperclaude.arch"}}'$'\t''{{.Label "tupperclaude.variant"}}'$'\t''{{.RunningFor}}'
+local ps_out
+ps_out="$(command docker ps --filter label=tupperclaude.arch --format "$fmt")"
+
+if [[ -z "$ps_out" ]]; then
+    print -r -- "tupperclaude: no sandboxes are running."
+    return 0
+fi
+
+local -a rows=("DIRECTORY"$'\t'"ARCH"$'\t'"VARIANT"$'\t'"UPTIME"$'\t'"TAILNET")
+
+local dir arch variant uptime instance ts_node tailnet
+while IFS=$'\t' read -r dir arch variant uptime; do
+    [[ -z "$dir" ]] && continue
+
+    instance="${dir//[^A-Za-z0-9]/-}"
+    if [[ "$variant" == playwright ]]; then
+        ts_node="claude-ts-pw-$instance"
+    else
+        ts_node="claude-ts-$instance"
+    fi
+
+    if command docker inspect "$ts_node" >/dev/null 2>&1; then
+        if _claude_ts_online "$ts_node" 1; then
+            tailnet="online"
+        else
+            tailnet="OFFLINE"
+        fi
+    else
+        # No sidecar container for this instance means it runs under
+        # network=default — there is nothing to probe.
+        tailnet="n/a"
+    fi
+
+    rows+=("$dir"$'\t'"$arch"$'\t'"$variant"$'\t'"$uptime"$'\t'"$tailnet")
+done <<<"$ps_out"
+
+print -r -l -- "${rows[@]}" | command column -t -s $'\t'

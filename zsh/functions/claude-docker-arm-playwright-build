@@ -1,0 +1,4 @@
+#!/usr/bin/env zsh
+# Build the native linux/arm64 browser-capable (Playwright) image. The base
+# arm64 image must already be built — this variant is FROM'd on top of it.
+_claude_docker_build arm64 playwright "$@"

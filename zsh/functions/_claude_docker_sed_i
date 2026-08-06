@@ -10,4 +10,4 @@ setopt local_options
 
 local expr="$1" file="$2"
 [[ -f "$file" ]] || return 0
-sed -i.claude-docker-bak "$expr" "$file" && rm -f "$file.claude-docker-bak"
+command sed -i.claude-docker-bak "$expr" "$file" && command rm -f "$file.claude-docker-bak"

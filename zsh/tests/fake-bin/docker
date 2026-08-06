@@ -1,0 +1,123 @@
+#!/usr/bin/env zsh
+# fake-bin/docker — stand-in for the real docker CLI, used by zsh/tests.
+#
+# Placed earlier on $PATH than the real docker, this script lets tests assert
+# on the exact argv a `docker ...` invocation would receive, without a daemon:
+# Claude Code cannot be logged in from a test, and CI has no Docker daemon, but
+# argv assertions need neither.
+#
+# Every invocation is appended to $FAKE_DOCKER_LOG as one record:
+#   arg1 \0 arg2 \0 ... argN \x1e
+# NUL separates args within a record (so an arg containing spaces, such as a
+# $PWD bind-mount path, survives intact); ASCII RS (\x1e) terminates the
+# record. zsh scalars happily carry embedded NUL bytes read back via
+# `"$(<file)"`, so callers can split on \x1e then \0 with no ambiguity, and no
+# argument is ever expected to contain either byte.
+#
+# Canned behaviour, tuned to what the code under test actually calls, and
+# steered by env vars so tests can simulate different worlds:
+#
+#   FAKE_DOCKER_IMAGES     space-separated list of images that "exist" for
+#                          `image inspect`. Unset (not just empty) = ALL images
+#                          exist, so the happy path needs no setup. Set to ""
+#                          (empty string) to make every image missing.
+#   FAKE_DOCKER_CONTAINERS space-separated list of container names that
+#                          "exist" for bare `inspect <name>`. Default: none —
+#                          so claude-ts-ensure always takes the "create fresh
+#                          sidecar" branch, which is what the run-args tests
+#                          want to observe.
+#   FAKE_DOCKER_TS_ONLINE  1 (default) = `exec <n> tailscale status --json`
+#                          reports BackendState=Running / Self.Online=true
+#                          immediately. 0 = reports Starting/offline (still
+#                          exits 0 — the JSON is valid, just not online yet).
+#   FAKE_DOCKER_PS         raw stdout for `docker ps ...`. Default: empty
+#                          (nothing running).
+#
+# `run`, `build`, `start`, `restart`, `rm`, and anything unrecognised: record
+# argv and exit 0. Read-only subcommands the code under test depends on for
+# control flow (`image inspect`, `inspect`, `info`, `--version`, `volume ls`,
+# `exec ... tailscale status --json`) get the canned responses above.
+
+emulate -L zsh
+setopt local_options
+
+if [[ -z ${FAKE_DOCKER_LOG:-} ]]; then
+    print -u2 "fake docker: \$FAKE_DOCKER_LOG is not set"
+    exit 127
+fi
+
+# Record this invocation regardless of what it turns out to be.
+{
+    local a
+    for a in "$@"; do
+        printf '%s\0' "$a"
+    done
+    printf '\x1e'
+} >>| "$FAKE_DOCKER_LOG"
+
+case $1 in
+
+--version)
+    print -r -- 'Docker version 24.0.0-fake, build fake0000'
+    exit 0
+    ;;
+
+info)
+    exit 0
+    ;;
+
+image)
+    if [[ $2 == inspect ]]; then
+        local img=$argv[-1]
+        local -a existing
+        if (( ${+FAKE_DOCKER_IMAGES} )); then
+            existing=(${=FAKE_DOCKER_IMAGES})
+        else
+            # Unset: everything exists.
+            print -r -- '2026-01-01T00:00:00.000000000Z'
+            exit 0
+        fi
+        if (( ${existing[(Ie)$img]} )); then
+            print -r -- '2026-01-01T00:00:00.000000000Z'
+            exit 0
+        fi
+        print -u2 -r -- "Error: No such image: $img"
+        exit 1
+    fi
+    # `image prune` and anything else under `image`: succeed quietly.
+    exit 0
+    ;;
+
+volume)
+    exit 0
+    ;;
+
+ps)
+    [[ -n ${FAKE_DOCKER_PS:-} ]] && print -r -- "$FAKE_DOCKER_PS"
+    exit 0
+    ;;
+
+inspect)
+    local name=$argv[-1]
+    local -a existing=(${=FAKE_DOCKER_CONTAINERS:-})
+    (( ${existing[(Ie)$name]} )) && exit 0
+    print -u2 -r -- "Error: No such object: $name"
+    exit 1
+    ;;
+
+exec)
+    if (( $# >= 3 )) && [[ "$*" == *'tailscale status --json'* ]]; then
+        if [[ ${FAKE_DOCKER_TS_ONLINE:-1} == 1 ]]; then
+            print -r -- '{"BackendState":"Running","Self":{"Online":true},"Health":[]}'
+        else
+            print -r -- '{"BackendState":"Starting","Self":{"Online":false},"Health":["not connected"]}'
+        fi
+    fi
+    exit 0
+    ;;
+
+run|build|start|restart|rm|*)
+    exit 0
+    ;;
+
+esac

@@ -1,0 +1,5 @@
+#!/usr/bin/env zsh
+# Build the linux/amd64 browser-capable (Playwright) image: native on Intel
+# Macs, QEMU cross-build on Apple Silicon. The base amd64 image must already
+# be built — this variant is FROM'd on top of it.
+_claude_docker_build amd64 playwright "$@"

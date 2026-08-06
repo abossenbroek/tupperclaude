@@ -14,7 +14,9 @@
 # is only consumed on first creation — use a reusable, tagged key.
 
 emulate -L zsh
-setopt local_options
+# noksharrays: array expansion below (_tc_check_fix, health) assumes 1-based
+# zsh indexing.
+setopt local_options noksharrays
 
 local ts_name="${1:-claude-ts}"
 local ts_host_in="${2:-}"
@@ -39,10 +41,10 @@ local sock_vol="claude-ts-sock-$ts_name"
 # A sidecar created before this existed has no socket volume — drop it so the
 # create path below rebuilds it. The node identity lives in the state volume,
 # which survives, so this doesn't churn the admin console.
-if docker inspect "$ts_name" >/dev/null 2>&1; then
-    if ! docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$ts_name" | grep -q "$sock_vol"; then
-        print -u2 "claude-ts-ensure: recreating '$ts_name' to share its tailscaled socket…"
-        docker rm -f "$ts_name" >/dev/null
+if command docker inspect "$ts_name" >/dev/null 2>&1; then
+    if ! command docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$ts_name" | grep -q "$sock_vol"; then
+        _claude_docker_warn "recreating Tailscale sidecar '$ts_name' to share its tailscaled socket…"
+        command docker rm -f "$ts_name" >/dev/null
     fi
 fi
 
@@ -53,40 +55,28 @@ fi
 # re-establishes the netmap, and the node identity lives in the state volume so
 # this costs nothing in the admin console.
 local running
-running="$(docker inspect -f '{{.State.Running}}' "$ts_name" 2>/dev/null)"
+running="$(command docker inspect -f '{{.State.Running}}' "$ts_name" 2>/dev/null)"
 
 if [[ "$running" == "true" ]]; then
     _claude_ts_online "$ts_name" 5 && return 0
-    print -u2 "claude-ts-ensure: '$ts_name' is running but offline — restarting…"
-    docker restart "$ts_name" >/dev/null
-elif docker inspect "$ts_name" >/dev/null 2>&1; then
+    _claude_docker_warn "Tailscale sidecar '$ts_name' is running but offline — restarting…"
+    command docker restart "$ts_name" >/dev/null
+elif command docker inspect "$ts_name" >/dev/null 2>&1; then
     # Exists but stopped → start it.
-    docker start "$ts_name" >/dev/null
+    command docker start "$ts_name" >/dev/null
 else
+    # The value is resolved here (docker run needs the actual key), but the
+    # diagnostic path is delegated to _claude_docker_check so the guidance text
+    # for a missing/unresolvable key lives in one place.
     local authkey="${TS_AUTHKEY:-}"
     if [[ -z "$authkey" ]]; then
-        local ref="${CLAUDE_DOCKER_OP_TS_REF:-}"
-        if [[ -z "$ref" ]]; then
-            print -u2 "claude-ts-ensure: no Tailscale auth key configured."
-            print -u2 "  Either export TS_AUTHKEY, or set CLAUDE_DOCKER_OP_TS_REF to a 1Password"
-            print -u2 "  secret reference (e.g. 'op://Private/Tailscale/authkey'). See the README"
-            print -u2 "  section 'Supplying the Tailscale auth key'."
+        if ! _claude_docker_check authkey; then
+            _claude_docker_err "$_tc_check_detail" "${_tc_check_fix[@]}"
             return 1
         fi
-        authkey="$(op read "$ref" 2>/dev/null)"
-        if [[ -z "$authkey" ]]; then
-            # Empty could mean a locked/signed-out vault or a genuinely missing
-            # item. `op whoami` is a cheap auth probe — use it to give the right
-            # next step instead of a misleading "mint a key".
-            if op whoami >/dev/null 2>&1; then
-                print -u2 "claude-ts-ensure: no key found at $ref. Mint a reusable, tagged key at"
-                print -u2 "  https://login.tailscale.com/admin/settings/keys and store it there."
-            else
-                print -u2 "claude-ts-ensure: 1Password is locked or signed out — run 'op signin'"
-                print -u2 "  (or unlock the desktop app), then retry."
-            fi
-            return 1
-        fi
+        local ref
+        ref="$(_claude_docker_opt op-ref CLAUDE_DOCKER_OP_TS_REF '')"
+        authkey="$(command op read "$ref" 2>/dev/null)"
     fi
 
     # The tailnet hostname is cosmetic (the netns join uses the container name,
@@ -95,12 +85,12 @@ else
     # hash-truncate anything longer rather than fail to come up.
     local ts_host="${ts_host_in:-$ts_name}"
     if (( ${#ts_host} > 63 )); then
-        local h="$(printf '%s' "$ts_host" | shasum | cut -c1-8)"
+        local h="$(printf '%s' "$ts_host" | command shasum | cut -c1-8)"
         ts_host="${ts_host[1,54]}-$h"
     fi
 
     print -u2 "claude-ts-ensure: creating Tailscale sidecar '$ts_name'…"
-    docker run -d --name "$ts_name" --restart unless-stopped \
+    command docker run -d --name "$ts_name" --restart unless-stopped \
         --cap-add=net_admin --cap-add=net_raw \
         --device=/dev/net/tun \
         -v "claude-ts-state-$ts_name":/var/lib/tailscale \
@@ -118,8 +108,8 @@ fi
 # Wait for the node to be genuinely online — not merely to have an address.
 _claude_ts_online "$ts_name" 45 && return 0
 
-print -u2 "claude-ts-ensure: '$ts_name' did not come online within 45s."
-docker exec "$ts_name" tailscale status --json 2>/dev/null \
-    | jq -r '.Health[]? | "  health: " + .' >&2
-print -u2 "  check: docker logs $ts_name"
-return 1
+local -a health
+health=("${(f)$(command docker exec "$ts_name" tailscale status --json 2>/dev/null \
+    | command jq -r '.Health[]? | "  health: " + .')}")
+_claude_docker_err "Tailscale sidecar '$ts_name' did not come online within 45s." \
+    "${health[@]}" "docker logs $ts_name"

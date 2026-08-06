@@ -1,0 +1,61 @@
+# claude-code-full-playwright — the production Claude image PLUS headless
+# Playwright. Built straight on top of `claude-code-full`, so every feature of
+# the base image (all toolchains, LSPs, sandbox runtime, baked config, nightly
+# upstream updates) is inherited byte-for-byte. We add exactly one thing:
+# Chromium + its OS deps + the Playwright MCP, wired to run headless.
+#
+# Why FROM claude-code-full (Approach A) and not a Playwright base (Approach B):
+# the A/B experiment showed the hard part was never Playwright — `playwright
+# install --with-deps chromium` is one step and resolves cleanly on Ubuntu 25.10
+# — it was reproducing Claude's sandbox base. FROM claude-code-full guarantees
+# feature parity and keeps inheriting upstream base maintenance. The full
+# reconstruction (Claude on the Playwright base) is preserved in
+# Dockerfile.claude-on-pw for reference.
+#
+# BASE_IMAGE must be declared before FROM (ARGs used by FROM are resolved in an
+# outer scope that only sees pre-FROM ARGs) — the default here is only a
+# fallback for a manual build; claude-docker-arm-playwright-build /
+# claude-docker-amd-playwright-build always pass
+# --build-arg BASE_IMAGE=claude-code-full-<arch> explicitly.
+ARG BASE_IMAGE=claude-code-full-arm64
+FROM ${BASE_IMAGE}
+
+# Builds for both linux/arm64 and linux/amd64 — nothing below is arch-specific:
+# it is all npm/npx driven, and Playwright's own installers resolve the correct
+# arch build for install-deps and the Chromium binary automatically.
+
+# ── Playwright OS dependencies (root/apt) ────────────────────────────────────
+# Browsers live in a dedicated path owned by `agent` so the Playwright MCP can
+# both read the baked browser and, if its version ever drifts, download a
+# matching one at runtime (a read-only browser dir is what broke the MCP in the
+# A probe). PWVER is derived from the pinned MCP so install-deps pulls the right
+# dependency set. No X11/Xvfb/XDG — these are headless-only deps.
+USER root
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
+RUN mkdir -p /usr/local/ms-playwright && chown agent:agent /usr/local/ms-playwright && \
+    PWVER=$(npm view @playwright/mcp@0.0.75 dependencies.playwright) && \
+    npx --yes "playwright@$PWVER" install-deps chromium
+
+# ── Playwright library + MCP + matching browser (as agent, like the base's
+#    other npm globals) ────────────────────────────────────────────────────────
+USER agent
+# MCP pinned exact; the matching Playwright lib version is derived from the
+# pinned MCP (npm view dependencies.playwright) rather than pinned separately —
+# this keeps both exactly in lockstep, and both are still pinned as a result,
+# just via one source of truth instead of two ARGs that could drift apart.
+# --ignore-scripts blocks npm lifecycle scripts on install; the browser itself
+# cannot use --ignore-scripts because `playwright install chromium` has to
+# download a browser binary, not run an npm postinstall — it's fetched
+# explicitly afterward instead.
+RUN PWMCP=0.0.75 && \
+    PWVER=$(npm view "@playwright/mcp@$PWMCP" dependencies.playwright) && \
+    npm install -g --ignore-scripts "@playwright/mcp@$PWMCP" "playwright@$PWVER" && \
+    playwright install chromium
+
+# ── Register the Playwright MCP so it is PRESENT in every normal session ──────
+# The base bakes the playwright plugin's marketplace metadata but not its runtime
+# cache, so the plugin route surfaces zero tools. A self-contained mcpServers
+# entry (pinned to the same MCP, using the baked browser) fixes that.
+RUN jq '.mcpServers.playwright = {"command":"npx","args":["-y","@playwright/mcp@0.0.75","--headless","--browser","chromium","--no-sandbox"]}' \
+      /home/agent/.claude.json > /tmp/cj.json && \
+    mv /tmp/cj.json /home/agent/.claude.json

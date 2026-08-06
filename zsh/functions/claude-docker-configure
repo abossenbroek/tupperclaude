@@ -1,0 +1,232 @@
+#!/usr/bin/env zsh
+# claude-docker-configure
+#
+# First-run setup wizard. Docker Desktop, a Tailscale auth key and a built
+# image are all one-time friction; this walks through them once and writes
+# ~/.tupperclaude.zsh so the answers stick.
+#
+# Every question is a single keypress (read -k / read -q, no line editing, no
+# live preview). Nothing touches a real file until the very end: answers are
+# gathered into locals first, the config is assembled in a temp file, and
+# only then `command mv`d into place — so Ctrl-C at any point during the
+# questions leaves nothing half-written, and an unanswered prompt (bare
+# Enter) just falls through to its default.
+
+emulate -L zsh
+# noksharrays: array indexing below assumes 1-based zsh semantics.
+# nonomatch:   $HOME-derived paths may contain glob metacharacters.
+setopt local_options noksharrays nonomatch
+
+# Every prompt below is a single keypress, which needs a real terminal. Without
+# this guard zsh's `read -k` fails per-question with a raw "not interactive and
+# can't open terminal", the wizard silently falls back to every default, and the
+# user gets a config file that does not reflect any answer they piped in. Fail
+# cleanly instead, and point at the non-interactive alternative.
+if [[ ! -t 0 || ! -t 1 ]]; then
+    _claude_docker_err "claude-docker-configure needs an interactive terminal" \
+        'run it directly in your shell, not through a pipe or a script' \
+        'or skip the wizard and set options by hand:' \
+        "  zstyle ':omz:plugins:tupperclaude' network tailscale"
+    return 1
+fi
+
+print "tupperclaude setup wizard"
+print ""
+
+# ---- 1. preflight -------------------------------------------------------
+# The checks that don't depend on any answer below: is Docker even here.
+# Auth-key and image checks come after we know what the user wants.
+print "Checking prerequisites..."
+local -a pf_label pf_what
+pf_label=(docker-bin docker-daemon claude-json ssh-agent)
+pf_what=(docker-bin docker-daemon claude-json ssh-agent)
+
+local i
+# Declared once, outside the loop: zsh 5.9 echoes `fix=<value>` to stdout when
+# `local fix` re-declares a name that already holds a value in the same scope.
+local fix
+for (( i = 1; i <= $#pf_label; i++ )); do
+    if _claude_docker_check "$pf_what[i]"; then
+        printf '  %-12s ok    %s\n' "$pf_label[i]" "$_tc_check_detail"
+    else
+        printf '  %-12s FAIL  %s\n' "$pf_label[i]" "$_tc_check_detail"
+        for fix in "${_tc_check_fix[@]}"; do
+            printf '        %s\n' "$fix"
+        done
+    fi
+done
+print ""
+
+# ---- 2. questions ---------------------------------------------------------
+
+local host_arch=arm64
+[[ "$(uname -m)" == x86_64 ]] && host_arch=amd64
+
+local key arch
+read -k 1 "key?Architecture — [1] arm64  [2] amd64  (default: $host_arch) > "
+print ""
+case $key in
+    1) arch=arm64 ;;
+    2) arch=amd64 ;;
+    *) arch=$host_arch ;;
+esac
+
+local network
+read -k 1 "key?Network — [1] tailscale (default)  [2] default/plain Docker bridge > "
+print ""
+case $key in
+    2) network=default ;;
+    *) network=tailscale ;;
+esac
+
+local auth_mode=skip op_ref=''
+if [[ $network == tailscale ]]; then
+    read -k 1 "key?Tailscale auth key — [1] 1Password reference  [2] env var (TS_AUTHKEY)  [3] skip for now > "
+    print ""
+    case $key in
+        1)
+            auth_mode=op
+            print -n "  1Password reference (e.g. op://Private/Tailscale/authkey): "
+            read op_ref
+            ;;
+        2) auth_mode=env ;;
+        *) auth_mode=skip ;;
+    esac
+fi
+
+local aws_enabled=0
+if read -q "?Include AWS CLI v2 in the image? [y/N] "; then
+    aws_enabled=1
+fi
+print ""
+
+# ---- 3. generate ~/.tupperclaude.zsh from the template ---------------------
+
+local template="$TUPPERCLAUDE_DIR/zsh/templates/tupperclaude.zsh"
+if [[ ! -r $template ]]; then
+    _claude_docker_err "template not found at $template" \
+        "check your tupperclaude installation — this file should ship with the plugin"
+    return 1
+fi
+
+local checksum
+checksum="$(command shasum "$template" | awk '{print $1}')"
+
+local target="$HOME/.tupperclaude.zsh"
+local tmpfile
+tmpfile="$(command mktemp)" || { _claude_docker_err "could not create a temp file"; return 1 }
+
+local result=1
+{
+    command cp "$template" "$tmpfile" || { _claude_docker_err "failed to stage the template"; return 1 }
+
+    # p10k's approach: read the checked-in commented template, substitute,
+    # write. `uncomment` strips a leading "# " from a zstyle line; `sub`
+    # replaces that line's value. Always uncomment before sub — sub only
+    # matches already-uncommented lines, which keeps its own pattern simple.
+    function uncomment {
+        local name=$1
+        _claude_docker_sed_i "s/^# \(zstyle ':omz:plugins:tupperclaude' $name \)/\1/" "$tmpfile"
+    }
+    function sub {
+        local name=$1 value=$2
+        local esc=${value//\\/\\\\}
+        esc=${esc//&/\\&}
+        esc=${esc//\//\\/}
+        _claude_docker_sed_i "s/^zstyle ':omz:plugins:tupperclaude' $name .*/zstyle ':omz:plugins:tupperclaude' $name '$esc'/" "$tmpfile"
+    }
+
+    uncomment network
+    sub network "$network"
+
+    if [[ $auth_mode == op && -n $op_ref ]]; then
+        uncomment op-ref
+        sub op-ref "$op_ref"
+    fi
+
+    if (( aws_enabled )); then
+        uncomment aws
+        sub aws on
+    fi
+
+    local header
+    header="$(
+        print -r -- "# Generated by claude-docker-configure on $(date '+%Y-%m-%d %H:%M:%S %z')"
+        print -r -- "# From template: zsh/templates/tupperclaude.zsh (sha1 $checksum)"
+        print -r -- "# Answers: arch=$arch network=$network auth=$auth_mode aws=$(( aws_enabled ? 1 : 0 ))"
+        print -r -- "# Run claude-docker-configure to regenerate."
+        print -r -- ""
+    )"
+    local body
+    body="$(<"$tmpfile")"
+    print -r -- "$header"$'\n'"$body" >"$tmpfile"
+
+    if ! zsh -n "$tmpfile"; then
+        _claude_docker_err "generated config failed a zsh syntax check — this is a bug in claude-docker-configure, nothing was written"
+        return 1
+    fi
+
+    if [[ -f $target ]]; then
+        local backup="$target.bak-$(date +%Y%m%d%H%M%S)"
+        command cp "$target" "$backup"
+        print "Existing $target backed up to $backup"
+        print "  diff -u $backup $target"
+    fi
+
+    command mv "$tmpfile" "$target"
+    print "Wrote $target"
+    result=0
+} always {
+    unfunction sub uncomment 2>/dev/null
+    [[ -f $tmpfile ]] && command rm -f -- "$tmpfile"
+}
+
+(( result == 0 )) || return 1
+
+# ---- 4. offer to source it from .zshrc -------------------------------------
+
+local zshrc="$HOME/.zshrc"
+# $'...' (ANSI-C quoting) so neither the $ nor the embedded quote characters
+# need shell-level escaping tricks: matches `source`/`.` of ~/.tupperclaude.zsh
+# or $HOME/.tupperclaude.zsh, with or without surrounding quotes.
+local source_pattern=$'^[[:space:]]*(source|\\.)[[:space:]]+["\']?(\\$HOME|~)/\\.tupperclaude\\.zsh["\']?[[:space:]]*$'
+local already_sourced=0
+[[ -f $zshrc ]] && command grep -Eq "$source_pattern" "$zshrc" && already_sourced=1
+
+if (( already_sourced )); then
+    print ""
+    print "$zshrc already sources ~/.tupperclaude.zsh — leaving it alone."
+elif [[ -f $zshrc ]]; then
+    print ""
+    if read -q "?Add 'source ~/.tupperclaude.zsh' to $zshrc? [Y/n] "; then
+        print ""
+        local zshrc_tmp
+        zshrc_tmp="$(command mktemp)" || { _claude_docker_err "could not create a temp file"; return 1 }
+        {
+            command cp -p "$zshrc" "$zshrc_tmp"
+            print -r -- 'source ~/.tupperclaude.zsh' >>"$zshrc_tmp"
+            command mv "$zshrc_tmp" "$zshrc"
+        } always {
+            [[ -f $zshrc_tmp ]] && command rm -f -- "$zshrc_tmp"
+        }
+        print "Added to $zshrc — restart your shell or run: source ~/.tupperclaude.zsh"
+    else
+        print ""
+        print "Skipped. Add this line to $zshrc yourself when ready:"
+        print "  source ~/.tupperclaude.zsh"
+    fi
+else
+    print ""
+    print "No $zshrc found — add this line to your zsh startup file yourself:"
+    print "  source ~/.tupperclaude.zsh"
+fi
+
+# ---- 5. next step -----------------------------------------------------------
+
+local build_cmd="claude-docker-arm-build"
+[[ $arch == amd64 ]] && build_cmd="claude-docker-amd64-build"
+
+print ""
+print "Next: build your image with:"
+print "  $build_cmd"
+return 0

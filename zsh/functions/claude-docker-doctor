@@ -1,0 +1,115 @@
+#!/usr/bin/env zsh
+# claude-docker-doctor
+#
+# Aggregate every predicate in _claude_docker_check into one report: an
+# aligned ok/FAIL/info column, the detail, and — for anything that needs
+# attention — the copy-pasteable fix indented underneath. Modelled on p10k's
+# detect → explain → copy-pasteable-command shape.
+#
+# "info" (as opposed to "FAIL") marks checks that most setups will
+# legitimately not have: the playwright images (most users only need base),
+# and op-signin (only relevant if an op-ref is configured at all). Everything
+# else is required, and a required failure makes this exit non-zero.
+#
+# Also prints TUPPERCLAUDE_VERSION and the resolved configuration, so a bug
+# report can just paste the whole thing.
+
+emulate -L zsh
+# noksharrays: this file indexes checks_* arrays with 1-based zsh semantics.
+setopt local_options noksharrays
+
+print "tupperclaude v${TUPPERCLAUDE_VERSION:-unknown} — doctor"
+print ""
+
+local network home_dir op_ref aws_label=no
+network="$(_claude_docker_opt network CLAUDE_DOCKER_NETWORK tailscale)"
+home_dir="$(_claude_docker_opt home CLAUDE_DOCKER_HOME "$HOME/.config/claude-docker")"
+op_ref="$(_claude_docker_opt op-ref CLAUDE_DOCKER_OP_TS_REF '')"
+_claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS && aws_label=yes
+
+# Build the check list. `checks_required[i]` distinguishes a real failure
+# from something informational — see the file header for which is which.
+local -a checks_label checks_what checks_arg checks_required
+checks_label=(docker-bin docker-daemon claude-json ssh-agent authkey)
+checks_what=(docker-bin docker-daemon claude-json ssh-agent authkey)
+checks_arg=('' '' '' '' '')
+# The Tailscale auth key only matters when the network mode actually uses
+# Tailscale; in `default` network mode a missing key is not a real problem.
+local authkey_required=1
+[[ $network != tailscale ]] && authkey_required=0
+checks_required=(1 1 1 1 $authkey_required)
+
+if [[ -n $op_ref ]]; then
+    checks_label+=(op-signin)
+    checks_what+=(op-signin)
+    checks_arg+=('')
+    checks_required+=(1)
+fi
+
+# Image checks for the full variant matrix — _claude_docker_ctx is the single
+# source of truth for image names, so ask it rather than deriving them here.
+local host_arch=arm64
+[[ "$(command uname -m)" == x86_64 ]] && host_arch=amd64
+local arch variant
+for arch in arm64 amd64; do
+    for variant in base playwright; do
+        _claude_docker_ctx "$arch" "$variant" || return 1
+        checks_label+=("image ($_tc_image)")
+        checks_what+=(image)
+        checks_arg+=("$_tc_image")
+        # Only the base image for THIS host's architecture is required. A
+        # machine that has never cross-built is perfectly healthy, so a missing
+        # foreign-arch image — or any playwright image — is informational.
+        # Without this, doctor exits non-zero on a completely correct setup.
+        if [[ $variant == base && $arch == $host_arch ]]; then
+            checks_required+=(1)
+        else
+            checks_required+=(0)
+        fi
+    done
+done
+
+local i any_required_failed=0
+# Size the label column to the widest label so the ok/FAIL column stays aligned
+# no matter how long the image tags get.
+local label_width=0
+for i in {1..$#checks_label}; do
+    (( ${#checks_label[i]} > label_width )) && label_width=${#checks_label[i]}
+done
+# "mark", not "status" — $status is a zsh special variable (alias for $?) and
+# read-only.
+local mark
+# Declared once, outside the loop: zsh 5.9 echoes `fix=<value>` to stdout when
+# `local fix` re-declares a name that already holds a value in the same scope.
+local fix
+for (( i = 1; i <= $#checks_label; i++ )); do
+    if _claude_docker_check "$checks_what[i]" "$checks_arg[i]"; then
+        mark=ok
+    elif (( checks_required[i] )); then
+        mark=FAIL
+        any_required_failed=1
+    else
+        mark=info
+    fi
+    printf "  %-${label_width}s %-5s %s\n" "$checks_label[i]" "$mark" "$_tc_check_detail"
+    if [[ $mark != ok ]]; then
+        for fix in "${_tc_check_fix[@]}"; do
+            printf '        %s\n' "$fix"
+        done
+    fi
+done
+
+print ""
+print "config:"
+printf '  %-11s %s\n' "network" "$network"
+printf '  %-11s %s\n' "state root" "$home_dir"
+printf '  %-11s %s\n' "aws" "$aws_label"
+[[ -n $op_ref ]] && printf '  %-11s %s\n' "op-ref" "$op_ref"
+
+print ""
+if (( any_required_failed )); then
+    _claude_docker_err "one or more required checks failed — see the fixes above"
+    return 1
+fi
+print "All required checks passed."
+return 0
