@@ -78,6 +78,13 @@ read again unless you delete that volume.
 Use a **reusable, tagged, ephemeral-off** key. Mint one at
 <https://login.tailscale.com/admin/settings/keys>.
 
+- **Reusable**, because you get one node per working directory — a single-use key
+  authenticates the first one and then leaves every later directory failing to come up.
+- **Tagged** (e.g. `tag:claude-docker`), so you can write ACLs that scope what these
+  sandboxes can reach, and so the nodes don't expire against your user's key expiry.
+- **Ephemeral off**, so a node keeps its identity across restarts instead of churning
+  your admin console.
+
 ### Option 1 — plain environment variable
 
 Simplest. Export `TS_AUTHKEY` before the first run:
