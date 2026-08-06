@@ -1,0 +1,138 @@
+#!/usr/bin/env zsh
+# _claude_docker_check <what> [arg]
+#
+# One preflight predicate per concern. Returns 0 (pass) or 1 (fail), prints
+# nothing, and publishes two globals the caller formats however it likes:
+#
+#   _tc_check_detail   short human-readable status (version, age, reason)
+#   _tc_check_fix      array of copy-pasteable commands that would fix it
+#
+# Shared by claude-docker-doctor (which tabulates every check), the run path
+# (which calls only the checks that gate the thing about to happen) and
+# claude-docker-configure. Keeping the predicates here means a missing
+# prerequisite is diagnosed identically wherever it is noticed.
+#
+# Checks:
+#   docker-bin              docker is on $PATH
+#   docker-daemon           the daemon answers
+#   image <image>           named image exists locally  (detail = age)
+#   claude-json             ~/.claude.json exists and is valid JSON
+#   authkey                 a Tailscale auth key is resolvable
+#   op-signin               1Password CLI is available and unlocked
+#   ssh-agent               Docker Desktop's ssh-agent socket is present
+
+emulate -L zsh
+setopt local_options noksharrays
+
+local what=$1 arg=$2
+typeset -g _tc_check_detail=''
+typeset -ga _tc_check_fix=()
+
+case $what in
+
+docker-bin)
+    if (( ${+commands[docker]} )); then
+        _tc_check_detail="$(command docker --version 2>/dev/null | head -1)"
+        return 0
+    fi
+    _tc_check_detail='not found on $PATH'
+    _tc_check_fix=('install Docker Desktop: https://docs.docker.com/desktop/install/mac-install/')
+    return 1
+    ;;
+
+docker-daemon)
+    if command docker info >/dev/null 2>&1; then
+        _tc_check_detail='reachable'
+        return 0
+    fi
+    _tc_check_detail='not reachable'
+    _tc_check_fix=('open -a Docker    # then wait for it to finish starting')
+    return 1
+    ;;
+
+image)
+    local created
+    if created="$(command docker image inspect -f '{{.Created}}' "$arg" 2>/dev/null)"; then
+        _tc_check_detail="$arg  (built $created)"
+        return 0
+    fi
+    _tc_check_detail="$arg not built"
+    # Map the image name back to the command that builds it.
+    local build_cmd="claude-docker-arm-build"
+    [[ $arg == *amd64* ]] && build_cmd="claude-docker-amd64-build"
+    [[ $arg == *playwright* ]] && build_cmd="${build_cmd%-build}-playwright-build"
+    _tc_check_fix=("$build_cmd")
+    return 1
+    ;;
+
+claude-json)
+    if [[ ! -f $HOME/.claude.json ]]; then
+        _tc_check_detail='~/.claude.json not found'
+        _tc_check_fix=('claude    # run Claude Code on the host once, then retry')
+        return 1
+    fi
+    if command jq . "$HOME/.claude.json" >/dev/null 2>&1; then
+        _tc_check_detail='valid JSON'
+        return 0
+    fi
+    _tc_check_detail='~/.claude.json is not valid JSON'
+    _tc_check_fix=('jq . ~/.claude.json    # shows where it is malformed')
+    return 1
+    ;;
+
+authkey)
+    if [[ -n ${TS_AUTHKEY:-} ]]; then
+        _tc_check_detail='from $TS_AUTHKEY'
+        return 0
+    fi
+    local ref
+    ref="$(_claude_docker_opt op-ref CLAUDE_DOCKER_OP_TS_REF '')"
+    if [[ -z $ref ]]; then
+        _tc_check_detail='no auth key configured'
+        _tc_check_fix=(
+            "export TS_AUTHKEY='tskey-auth-...'"
+            "zstyle ':omz:plugins:tupperclaude' op-ref 'op://Private/Tailscale/authkey'"
+            'mint a reusable, tagged key: https://login.tailscale.com/admin/settings/keys'
+        )
+        return 1
+    fi
+    if [[ -n "$(command op read "$ref" 2>/dev/null)" ]]; then
+        _tc_check_detail="from 1Password ($ref)"
+        return 0
+    fi
+    _tc_check_detail="1Password reference $ref did not resolve"
+    _tc_check_fix=("op read '$ref'    # shows the underlying error")
+    return 1
+    ;;
+
+op-signin)
+    if (( ! ${+commands[op]} )); then
+        _tc_check_detail='1Password CLI not installed'
+        _tc_check_fix=('brew install --cask 1password-cli')
+        return 1
+    fi
+    if command op whoami >/dev/null 2>&1; then
+        _tc_check_detail='signed in'
+        return 0
+    fi
+    _tc_check_detail='locked or signed out'
+    _tc_check_fix=('op signin')
+    return 1
+    ;;
+
+ssh-agent)
+    if [[ -S /run/host-services/ssh-auth.sock ]]; then
+        _tc_check_detail='Docker Desktop socket present'
+        return 0
+    fi
+    _tc_check_detail='Docker Desktop ssh-agent socket missing'
+    _tc_check_fix=('SSH agent forwarding into the container will not work.'
+                   'This socket is provided by Docker Desktop for Mac only.')
+    return 1
+    ;;
+
+*)
+    _claude_docker_err "unknown check '$what'"
+    return 1
+    ;;
+esac

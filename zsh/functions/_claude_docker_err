@@ -1,0 +1,20 @@
+#!/usr/bin/env zsh
+# _claude_docker_err <message> [fix-command ...]
+#
+# House style for user-facing errors, modelled on p10k's detect → explain →
+# copy-pasteable-command shape. Always stderr. Any additional arguments are
+# printed as indented commands the user can paste directly.
+#
+# Prefixed `tupperclaude:` rather than `tupperclaude-zsh:` so the messages read
+# identically in the fish sibling.
+
+emulate -L zsh
+setopt local_options
+
+print -u2 -r -- "tupperclaude: error: $1"
+shift
+local fix
+for fix in "$@"; do
+    print -u2 -r -- "  $fix"
+done
+return 1

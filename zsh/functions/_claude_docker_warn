@@ -1,0 +1,16 @@
+#!/usr/bin/env zsh
+# _claude_docker_warn <message> [fix-command ...]
+#
+# As _claude_docker_err, but non-fatal and returns 0. See that function for the
+# message house style.
+
+emulate -L zsh
+setopt local_options
+
+print -u2 -r -- "tupperclaude: warning: $1"
+shift
+local fix
+for fix in "$@"; do
+    print -u2 -r -- "  $fix"
+done
+return 0

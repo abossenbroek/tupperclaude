@@ -1,0 +1,91 @@
+#!/usr/bin/env zsh
+# _claude_docker_ctx <arch> <variant>
+#
+# Resolve every path, name and label for one (arch, variant) pair in the current
+# working directory, and publish them as `_tc_*` globals for the caller to read.
+# This is the single source of truth for the variant matrix — no other function
+# should derive an image name, state path or sidecar name itself.
+#
+#                     base                      playwright
+#   image             claude-code-full-<arch>   claude-code-full-playwright-<arch>
+#   dockerfile        docker/Dockerfile         docker/Dockerfile.playwright
+#   state root        ~/.config/claude-docker   ~/.config/claude-docker-playwright
+#   sidecar prefix    claude-ts-                claude-ts-pw-
+#   extra run flags   (none)                    --ipc=host
+#
+# Separate state roots and tailnet nodes are deliberate: Chrome debug ports and
+# dev-servers-under-test in the playwright sandbox would otherwise collide with a
+# base sandbox running in the same directory.
+#
+# Sets (typeset -g):
+#   _tc_arch _tc_variant _tc_platform _tc_image _tc_dockerfile _tc_cfg
+#   _tc_instance _tc_state _tc_ts_node _tc_ts_host _tc_name _tc_network
+#   _tc_run_flags   (array)
+#
+# Returns 1 on an invalid arch or variant. Validation is loud on purpose: a bad
+# value here would silently produce a wrong `docker run`, unlike a cosmetic
+# plugin option where degrading quietly is acceptable.
+
+emulate -L zsh
+# noksharrays: array construction below assumes 1-based zsh indexing.
+# nonomatch:   $PWD may contain glob metacharacters; we never want them expanded.
+setopt local_options noksharrays nonomatch
+
+local arch=$1 variant=$2
+
+case $arch in
+    arm64|amd64) ;;
+    *) _claude_docker_err "unknown architecture '$arch' (expected arm64 or amd64)"; return 1 ;;
+esac
+case $variant in
+    base|playwright) ;;
+    *) _claude_docker_err "unknown variant '$variant' (expected base or playwright)"; return 1 ;;
+esac
+
+typeset -g _tc_arch=$arch
+typeset -g _tc_variant=$variant
+typeset -g _tc_platform="linux/$arch"
+
+local root=${TUPPERCLAUDE_DIR:-${0:A:h:h:h}}
+local cfg_default ts_prefix
+typeset -ga _tc_run_flags=()
+
+if [[ $variant == playwright ]]; then
+    typeset -g _tc_image="claude-code-full-playwright-$arch"
+    typeset -g _tc_dockerfile="$root/docker/Dockerfile.playwright"
+    cfg_default="$HOME/.config/claude-docker-playwright"
+    ts_prefix="claude-ts-pw-"
+    # Playwright's own recommendation: Chromium crashes on the default 64MB
+    # /dev/shm. We do NOT pass --init; the base image already sets
+    # ENTRYPOINT ["tini","--"], and a second tini warns about not being PID 1.
+    _tc_run_flags=(--ipc=host)
+else
+    typeset -g _tc_image="claude-code-full-$arch"
+    typeset -g _tc_dockerfile="$root/docker/Dockerfile"
+    cfg_default="$HOME/.config/claude-docker"
+    ts_prefix="claude-ts-"
+fi
+
+# `home` names the base state root; the playwright root is always that path with
+# a -playwright suffix, so overriding `home` relocates both together and the two
+# trees can never collapse onto each other.
+typeset -g _tc_cfg
+_tc_cfg="$(_claude_docker_opt home CLAUDE_DOCKER_HOME "$HOME/.config/claude-docker")"
+[[ $variant == playwright ]] && _tc_cfg="${_tc_cfg}-playwright"
+
+typeset -g _tc_instance=${PWD//[^A-Za-z0-9]/-}
+typeset -g _tc_state="$_tc_cfg/instances/$_tc_instance"
+typeset -g _tc_ts_node="${ts_prefix}${_tc_instance}"
+typeset -g _tc_ts_host="claude-ts-${${PWD:t}//[^A-Za-z0-9]/-}"
+typeset -g _tc_name="claude-docker-${variant}-${arch}-${_tc_instance}"
+
+typeset -g _tc_network
+_tc_network="$(_claude_docker_opt network CLAUDE_DOCKER_NETWORK tailscale)"
+case $_tc_network in
+    tailscale|default) ;;
+    *) _claude_docker_err "unknown network mode '$_tc_network' (expected tailscale or default)" \
+           "zstyle ':omz:plugins:tupperclaude' network tailscale"
+       return 1 ;;
+esac
+
+return 0

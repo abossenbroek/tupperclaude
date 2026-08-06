@@ -1,0 +1,64 @@
+#!/usr/bin/env zsh
+# _claude_docker_opt [-b] <key> <envvar> [default]
+#
+# Resolve one configuration option: zstyle → environment variable → default.
+#
+#   zstyle ':omz:plugins:tupperclaude' <key> <value>     highest precedence
+#   $<envvar>                                            fallback
+#   <default>                                            last resort
+#
+# The env-var layer is what lets a single exported CLAUDE_DOCKER_* variable
+# configure both this plugin and its fish sibling identically.
+#
+# Without -b: prints the resolved value on stdout, always returns 0.
+# With -b:    prints nothing; returns 0 for true, 1 for false. A zstyle boolean
+#             is read with `zstyle -t` semantics (true|yes|on|1); an env var is
+#             true when set to anything other than empty|no|off|false|0.
+#
+# Called at *run* time, never at load time, so `zstyle` lines take effect
+# wherever they appear in .zshrc.
+
+emulate -L zsh
+# noksharrays: KSH_ARRAYS would change ${(P)...} indexing behaviour below.
+setopt local_options noksharrays
+
+local boolean=0
+if [[ $1 == -b ]]; then
+    boolean=1
+    shift
+fi
+
+local key=$1 envvar=$2 default=$3
+local -r ns=':omz:plugins:tupperclaude'
+
+if (( boolean )); then
+    zstyle -t "$ns" "$key"
+    case $? in
+        0) return 0 ;;   # explicitly true
+        1) return 1 ;;   # explicitly something else
+    esac                 # 2 = not set, fall through
+
+    # ${(P)envvar} indirects through the variable *name*; ${(P)+envvar} tests
+    # whether that named variable exists at all.
+    if (( ${(P)+envvar} )); then
+        local v=${(P)envvar}
+        [[ -n $v && $v != (no|off|false|0|NO|OFF|FALSE) ]]
+        return $?
+    fi
+
+    [[ -n $default && $default != (no|off|false|0) ]]
+    return $?
+fi
+
+local value
+if zstyle -s "$ns" "$key" value && [[ -n $value ]]; then
+    print -r -- "$value"
+    return 0
+fi
+
+if (( ${(P)+envvar} )) && [[ -n ${(P)envvar} ]]; then
+    print -r -- "${(P)envvar}"
+    return 0
+fi
+
+print -r -- "$default"
