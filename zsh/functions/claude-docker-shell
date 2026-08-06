@@ -32,8 +32,15 @@ fi
 
 local id="${matches[1]%%$'\t'*}"
 
+# Allocate a TTY only when we actually have one. `docker exec -t` against a
+# non-terminal stdin fails outright with "cannot attach stdin to a TTY-enabled
+# container", which would break every scripted use — `claude-docker-shell -c
+# '...'` from a script, a pipeline, or CI.
+local -a exec_flags=(-i)
+[[ -t 0 ]] && exec_flags+=(-t)
+
 if (( $# > 0 )); then
-    command docker exec -it "$id" "$@"
+    command docker exec "${exec_flags[@]}" "$id" "$@"
 else
-    command docker exec -it "$id" bash
+    command docker exec "${exec_flags[@]}" "$id" bash
 fi

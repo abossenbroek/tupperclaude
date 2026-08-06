@@ -98,8 +98,11 @@ for arch in arm64 amd64; do
         [[ -r $launcher ]]
         check "$arch/$variant: tmux launcher was generated" $?
         if [[ -r $launcher ]]; then
-            local windows
-            windows=$(grep -c 'tmux new-session\|tmux new-window' $launcher)
+            # Always assigned in the same statement: a bare `local windows`
+            # redeclared on a later loop iteration, while it still holds a
+            # value from the previous one, makes zsh print "windows=<value>"
+            # to stdout — its query-on-redeclare behaviour.
+            local windows=$(grep -c 'tmux new-session\|tmux new-window' $launcher)
             [[ $windows -eq 3 ]]
             check "$arch/$variant: tailscale tmux launcher has 3 windows" $?
         else
@@ -148,8 +151,7 @@ local launcher="$_tc_cfg/tmux-launch.sh"
 [[ -r $launcher ]]
 check "default network: tmux launcher was generated" $?
 if [[ -r $launcher ]]; then
-    local windows
-    windows=$(grep -c 'tmux new-session\|tmux new-window' $launcher)
+    local windows=$(grep -c 'tmux new-session\|tmux new-window' $launcher)
     [[ $windows -eq 2 ]]
     check "default network: tmux launcher has 2 windows" $?
 else

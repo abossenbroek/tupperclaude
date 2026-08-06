@@ -32,8 +32,35 @@ FROM ${BASE_IMAGE}
 # dependency set. No X11/Xvfb/XDG — these are headless-only deps.
 USER root
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
+
+# Playwright validates the host OS against an allowlist before downloading a
+# browser, and the base image now tracks Ubuntu 26.04, which is newer than any
+# published Playwright's list — `playwright install chromium` aborts with
+# "Playwright does not support chromium on ubuntu26.04-arm64" even though the
+# download and the browser itself work perfectly on it (verified: Chrome
+# Headless Shell 151 installs and runs on ubuntu26.04-arm64).
+#
+# This is an allowlist gap, not a real incompatibility, so skip the check. Set
+# as a persistent ENV rather than per-RUN because the Playwright MCP re-runs the
+# same validation when it launches the browser at run time.
+#
+# Revisit when Playwright adds Ubuntu 26.04: drop this and the build should work
+# unchanged.
+ENV PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
+
+# The MCP version is pinned in exactly one place and referenced everywhere below
+# (OS deps, the npm install, and the mcpServers registration), so the three can
+# never drift out of step.
+#
+# 0.0.79 is the floor, not an arbitrary bump: it resolves to playwright
+# 1.63.0-alpha, and versions before ~1.62 IGNORE
+# PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS entirely — the previously pinned
+# 0.0.75 (playwright 1.61.0-alpha) fails on Ubuntu 26.04 no matter what that
+# variable is set to. Verified by installing chromium with each in turn.
+ARG PLAYWRIGHT_MCP_VERSION=0.0.79
+
 RUN mkdir -p /usr/local/ms-playwright && chown agent:agent /usr/local/ms-playwright && \
-    PWVER=$(npm view @playwright/mcp@0.0.75 dependencies.playwright) && \
+    PWVER=$(npm view "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION" dependencies.playwright) && \
     npx --yes "playwright@$PWVER" install-deps chromium
 
 # ── Playwright library + MCP + matching browser (as agent, like the base's
@@ -47,15 +74,15 @@ USER agent
 # cannot use --ignore-scripts because `playwright install chromium` has to
 # download a browser binary, not run an npm postinstall — it's fetched
 # explicitly afterward instead.
-RUN PWMCP=0.0.75 && \
-    PWVER=$(npm view "@playwright/mcp@$PWMCP" dependencies.playwright) && \
-    npm install -g --ignore-scripts "@playwright/mcp@$PWMCP" "playwright@$PWVER" && \
+ARG PLAYWRIGHT_MCP_VERSION
+RUN PWVER=$(npm view "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION" dependencies.playwright) && \
+    npm install -g --ignore-scripts "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION" "playwright@$PWVER" && \
     playwright install chromium
 
 # ── Register the Playwright MCP so it is PRESENT in every normal session ──────
 # The base bakes the playwright plugin's marketplace metadata but not its runtime
 # cache, so the plugin route surfaces zero tools. A self-contained mcpServers
 # entry (pinned to the same MCP, using the baked browser) fixes that.
-RUN jq '.mcpServers.playwright = {"command":"npx","args":["-y","@playwright/mcp@0.0.75","--headless","--browser","chromium","--no-sandbox"]}' \
+RUN jq '.mcpServers.playwright = {"command":"npx","args":["-y","@playwright/mcp@'"$PLAYWRIGHT_MCP_VERSION"'","--headless","--browser","chromium","--no-sandbox"]}' \
       /home/agent/.claude.json > /tmp/cj.json && \
     mv /tmp/cj.json /home/agent/.claude.json

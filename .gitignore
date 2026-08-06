@@ -1,2 +1,10 @@
 *.claude-docker-bak
 .DS_Store
+
+# Test scratch. The fake-docker log records full `docker run` argv, which
+# includes -e OPENAI_API_KEY=... etc. from the ambient environment. The runner
+# already writes these under mktemp and removes them via always{}, but never let
+# a stray copy become committable.
+*.log
+fake-docker*.log
+zsh/tests/**/*.log

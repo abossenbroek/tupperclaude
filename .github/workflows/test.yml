@@ -1,0 +1,24 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  zsh-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh jq
+
+      # No Docker daemon is installed or required here on purpose: the whole
+      # suite runs against zsh/tests/fake-bin/docker, a shim that records
+      # `docker` argv instead of contacting a daemon. That's what makes this
+      # suite viable at all — Claude Code cannot be logged in from a test,
+      # and there is no way to run the real Docker Desktop stack in CI — but
+      # argv assertions need neither. Do not add a matrix over Docker
+      # versions; there is nothing to matrix since docker is faked.
+      - name: Run zsh test suite
+        run: zsh zsh/tests/run-tests.zsh

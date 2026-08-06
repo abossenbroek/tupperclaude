@@ -126,7 +126,11 @@ records_matching() {
     for r in $docker_records; do
         argv_tokens "$r"
         [[ ${reply[1]} == "$want1" ]] || continue
-        local all=1 t
+        # `t=''`, not bare `t`: redeclaring a *bare* local that already
+        # holds a value from a previous loop iteration makes zsh print
+        # "t=<value>" to stdout (its query-on-redeclare behaviour) — an
+        # always-assigned redeclaration never triggers that.
+        local all=1 t=''
         for t in "$@"; do
             (( ${reply[(Ie)$t]} )) || { all=0; break }
         done

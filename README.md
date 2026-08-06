@@ -310,6 +310,18 @@ plugin metadata. Credentials are *not* baked — they are mounted at run time.
 warns when it spots key/token-shaped fields. **Treat the built image as private: do not
 push `claude-code-full-*` to a shared or public registry.**
 
+### API keys are visible in the process list
+
+`ANTHROPIC_API_KEY`, `LINEAR_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY` and
+`PULUMI_ACCESS_TOKEN` are forwarded into the container as `-e NAME=value` arguments. That
+is what makes them work inside the sandbox, but it also means their values appear in the
+`docker run` command line — visible to anyone who can run `ps` on your machine, and to
+`docker inspect` on the running container.
+
+On a single-user laptop this is normally an acceptable trade. It is worth knowing about if
+you share the machine, and worth remembering before pasting the output of `ps`, `docker
+inspect`, or a debug log into an issue or a chat.
+
 ## Supply chain
 
 Every third-party component follows the same policy:
@@ -357,6 +369,17 @@ published checksum file:
   The **arm64 image has been built and verified.** If you're on Apple Silicon, use
   `claude-docker-arm`; reach for `amd64` only if you specifically need x86_64 and are
   prepared for a long, unverified build.
+
+- **Playwright pins `@playwright/mcp` to 0.0.79 or newer, and that is a floor rather than
+  a preference.** The base image tracks Ubuntu 26.04, which no published Playwright yet
+  lists in its browser-support allowlist, so `playwright install chromium` refuses with
+  *"Playwright does not support chromium on ubuntu26.04-arm64"*. The image sets
+  `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1` to bypass that check — but Playwright
+  releases before roughly 1.62 **ignore that variable entirely**, so an older MCP pin
+  fails no matter what. This is an allowlist gap, not a real incompatibility: Chromium 152
+  launches and renders correctly on `ubuntu26.04-arm64`, which the
+  `claude-code-full-playwright-arm64` build has been verified end to end to do. Once
+  Playwright adds Ubuntu 26.04, the environment variable can be dropped.
 
 ## Troubleshooting
 
