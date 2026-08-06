@@ -1,0 +1,125 @@
+#!/usr/bin/env zsh
+# claude-ts-ensure [container-name] [tailnet-hostname]
+#
+# Ensure a persistent Tailscale sidecar is running, so a claude-docker container
+# can join its network namespace with `--network=container:<name>` and reach the
+# tailnet transparently.
+#
+# Kernel networking (TS_USERSPACE=false) needs NET_ADMIN + /dev/net/tun, which
+# Docker Desktop's Linux VM provides. The sidecar holds the tunnel and the
+# privileges; the claude container that joins it stays unprivileged.
+#
+# The node is persistent: state lives in a named volume so the same node
+# re-appears across restarts instead of churning the admin console. The auth key
+# is only consumed on first creation — use a reusable, tagged key.
+
+emulate -L zsh
+setopt local_options
+
+local ts_name="${1:-claude-ts}"
+local ts_host_in="${2:-}"
+local cfg="${CLAUDE_DOCKER_HOME:-$HOME/.config/claude-docker}"
+
+# The joined container keeps its own /etc/resolv.conf, so MagicDNS names won't
+# resolve unless we point it at the tailnet resolver (100.100.100.100). MagicDNS
+# forwards non-tailnet queries upstream; 1.1.1.1 is a fallback for when MagicDNS
+# is off/down, and timeout:1 attempts:1 bounds the penalty in that case. The
+# claude-docker images mount this read-only.
+mkdir -p "$cfg"
+printf 'nameserver 100.100.100.100\nnameserver 1.1.1.1\noptions timeout:1 attempts:1\n' \
+    >"$cfg/tailscale-resolv.conf"
+
+# The sidecar owns tailscaled; containers that join its netns need its control
+# socket too, or the `tailscale` CLI has nothing to talk to. TS_SOCKET moves the
+# socket into a named volume that the claude container mounts at
+# /var/run/tailscale (tailscaled chmods it 0666 and authorises by peer creds, so
+# an unprivileged user can still run read-only commands).
+local sock_vol="claude-ts-sock-$ts_name"
+
+# A sidecar created before this existed has no socket volume — drop it so the
+# create path below rebuilds it. The node identity lives in the state volume,
+# which survives, so this doesn't churn the admin console.
+if docker inspect "$ts_name" >/dev/null 2>&1; then
+    if ! docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$ts_name" | grep -q "$sock_vol"; then
+        print -u2 "claude-ts-ensure: recreating '$ts_name' to share its tailscaled socket…"
+        docker rm -f "$ts_name" >/dev/null
+    fi
+fi
+
+# Running is NOT the same as connected. A sidecar that has lost its link to the
+# coordination server keeps its 100.x address and still reports
+# BackendState=Running, so a container joining its netns silently gets a tailnet
+# that resolves nothing. Verify it is really online; a restart reliably
+# re-establishes the netmap, and the node identity lives in the state volume so
+# this costs nothing in the admin console.
+local running
+running="$(docker inspect -f '{{.State.Running}}' "$ts_name" 2>/dev/null)"
+
+if [[ "$running" == "true" ]]; then
+    _claude_ts_online "$ts_name" 5 && return 0
+    print -u2 "claude-ts-ensure: '$ts_name' is running but offline — restarting…"
+    docker restart "$ts_name" >/dev/null
+elif docker inspect "$ts_name" >/dev/null 2>&1; then
+    # Exists but stopped → start it.
+    docker start "$ts_name" >/dev/null
+else
+    local authkey="${TS_AUTHKEY:-}"
+    if [[ -z "$authkey" ]]; then
+        local ref="${CLAUDE_DOCKER_OP_TS_REF:-}"
+        if [[ -z "$ref" ]]; then
+            print -u2 "claude-ts-ensure: no Tailscale auth key configured."
+            print -u2 "  Either export TS_AUTHKEY, or set CLAUDE_DOCKER_OP_TS_REF to a 1Password"
+            print -u2 "  secret reference (e.g. 'op://Private/Tailscale/authkey'). See the README"
+            print -u2 "  section 'Supplying the Tailscale auth key'."
+            return 1
+        fi
+        authkey="$(op read "$ref" 2>/dev/null)"
+        if [[ -z "$authkey" ]]; then
+            # Empty could mean a locked/signed-out vault or a genuinely missing
+            # item. `op whoami` is a cheap auth probe — use it to give the right
+            # next step instead of a misleading "mint a key".
+            if op whoami >/dev/null 2>&1; then
+                print -u2 "claude-ts-ensure: no key found at $ref. Mint a reusable, tagged key at"
+                print -u2 "  https://login.tailscale.com/admin/settings/keys and store it there."
+            else
+                print -u2 "claude-ts-ensure: 1Password is locked or signed out — run 'op signin'"
+                print -u2 "  (or unlock the desktop app), then retry."
+            fi
+            return 1
+        fi
+    fi
+
+    # The tailnet hostname is cosmetic (the netns join uses the container name,
+    # not this). Callers pass a clean, readable name; fall back to the container
+    # name otherwise. A Tailscale hostname is a DNS label capped at 63 bytes, so
+    # hash-truncate anything longer rather than fail to come up.
+    local ts_host="${ts_host_in:-$ts_name}"
+    if (( ${#ts_host} > 63 )); then
+        local h="$(printf '%s' "$ts_host" | shasum | cut -c1-8)"
+        ts_host="${ts_host[1,54]}-$h"
+    fi
+
+    print -u2 "claude-ts-ensure: creating Tailscale sidecar '$ts_name'…"
+    docker run -d --name "$ts_name" --restart unless-stopped \
+        --cap-add=net_admin --cap-add=net_raw \
+        --device=/dev/net/tun \
+        -v "claude-ts-state-$ts_name":/var/lib/tailscale \
+        -v "$sock_vol":/tmp/tailscale-sock \
+        -e TS_AUTHKEY="$authkey" \
+        -e TS_STATE_DIR=/var/lib/tailscale \
+        -e TS_SOCKET=/tmp/tailscale-sock/tailscaled.sock \
+        -e TS_USERSPACE=false \
+        -e TS_ACCEPT_DNS=true \
+        -e TS_EXTRA_ARGS=--accept-routes \
+        -e TS_HOSTNAME="$ts_host" \
+        tailscale/tailscale:latest >/dev/null || return 1
+fi
+
+# Wait for the node to be genuinely online — not merely to have an address.
+_claude_ts_online "$ts_name" 45 && return 0
+
+print -u2 "claude-ts-ensure: '$ts_name' did not come online within 45s."
+docker exec "$ts_name" tailscale status --json 2>/dev/null \
+    | jq -r '.Health[]? | "  health: " + .' >&2
+print -u2 "  check: docker logs $ts_name"
+return 1

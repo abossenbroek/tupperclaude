@@ -1,0 +1,3 @@
+#!/usr/bin/env zsh
+# Build the native linux/arm64 image (Apple Silicon — no Rosetta).
+_claude_docker_build arm64 "$@"

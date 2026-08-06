@@ -1,0 +1,154 @@
+#!/usr/bin/env zsh
+# _claude_docker_run <arch> [claude args...]
+#
+# Run Claude Code in the claude-code-full-<arch> image, with the current
+# directory bind-mounted at the same path and networking supplied by a
+# per-directory Tailscale sidecar.
+
+emulate -L zsh
+setopt local_options
+
+local arch="$1"; shift
+local platform="linux/$arch"
+local image="claude-code-full-$arch"
+local build_cmd; [[ "$arch" == "arm64" ]] && build_cmd=claude-docker-build-arm || build_cmd=claude-docker-build-amd64
+
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+    print -u2 "ERROR: image '$image' not found. Build it first with: $build_cmd"
+    return 1
+fi
+
+local cfg="${CLAUDE_DOCKER_HOME:-$HOME/.config/claude-docker}"
+
+# One state dir + one Tailscale node per working directory, so parallel sessions
+# in different repos don't share teams/tasks/projects state or tailnet identity.
+local instance="${PWD//[^A-Za-z0-9]/-}"
+local state="$cfg/instances/$instance"
+mkdir -p "$state/teams" "$state/tasks" "$state/projects" "$cfg/cargo" "$HOME/.claude/worktrees"
+touch "$cfg/.credentials.json"
+
+local ts_node="claude-ts-$instance"
+local ts_host="claude-ts-${${PWD:t}//[^A-Za-z0-9]/-}"
+claude-ts-ensure "$ts_node" "$ts_host" || return 1
+
+# tmux/readline config and the session launcher live on the host and are mounted
+# read-only, so changing them needs no image rebuild. print -r keeps the \n and
+# \a sequences below literal, for the container's bash to interpret at run time.
+printf 'set -g mode-keys vi\nset -g status-keys vi\nset -sg escape-time 10\n' >"$cfg/tmux.conf"
+printf 'set editing-mode vi\n' >"$cfg/inputrc"
+
+# Liveness probe for window 2. Control plane = the sidecar's own view of the
+# tailnet; data plane = DNS + egress through its netns. Both matter: the node
+# keeps its 100.x address and BackendState=Running after losing the netmap.
+print -r -l >"$cfg/netwatch.sh" \
+    '#!/bin/bash' \
+    'last=""; beat=0' \
+    'while true; do' \
+    '    online=$(tailscale status --json 2>/dev/null | jq -r ".Self.Online // \"unknown\"")' \
+    '    if curl -s -o /dev/null -m 8 https://login.tailscale.com/; then egress=ok; else egress=FAIL; fi' \
+    '    state="$online/$egress"' \
+    '    if [ "$state" != "$last" ]; then' \
+    '        printf "%s  tailnet=%s egress=%s\n" "$(date +%H:%M:%S)" "$online" "$egress"' \
+    '        if [ "$state" != "true/ok" ]; then' \
+    '            printf "\a  degraded:\n"' \
+    '            tailscale status --json 2>/dev/null | jq -r ".Health[]? | \"    \" + ."' \
+    '            printf "    restarting the sidecar will NOT heal this container (its netns goes stale).\n"' \
+    '            printf "    exit claude and re-run the claude-docker command — it repairs the sidecar on launch.\n"' \
+    '        fi' \
+    '        last=$state' \
+    '    elif [ $((beat % 4)) -eq 0 ]; then' \
+    '        printf "%s  %s\n" "$(date +%H:%M:%S)" "$state"' \
+    '    fi' \
+    '    beat=$((beat + 1))' \
+    '    sleep 15' \
+    'done'
+
+# Window 0 runs claude; window 1 is a plain shell with the gcloud ADC login
+# pre-typed but NOT executed — one Enter away when a token expires; window 2
+# watches the tailnet so a silent disconnect rings the bell instead of surfacing
+# as mystery tool failures.
+print -r -l >"$cfg/tmux-launch.sh" \
+    '#!/bin/bash' \
+    'tmux new-session -d -s main -n claude "$@"' \
+    'tmux new-window -t main: -n adc' \
+    '# Let bash paint its prompt first, or the pre-typed line renders twice.' \
+    'sleep 1' \
+    "tmux send-keys -t main:adc 'gcloud auth login --update-adc && gcloud auth application-default login'" \
+    'tmux new-window -t main: -n net bash /run/netwatch.sh' \
+    'tmux select-window -t main:claude' \
+    'exec tmux attach -t main'
+
+# Tell Claude what kind of machine it is running on.
+if [[ ! -f "$PWD/MACHINE.md" ]]; then
+    cat >"$PWD/MACHINE.md" <<EOF
+# Machine
+
+This directory runs inside a Docker container (\`$image\`, native \`$platform\`).
+
+- **Working directory** is bind-mounted from the macOS host at the same path — file edits are live on both sides.
+- **Networking** is provided by a per-directory Tailscale sidecar; the container has full tailnet access.
+- **Credentials** are copied in at startup: SSH, GitHub CLI (\`gh\`), Google Cloud (\`gcloud\`), Linear, Pulumi, AWS.
+- **Tools available:** claude, gh, gcloud, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear.
+- **Cargo cache** and Claude credentials are shared across all claude-docker sessions; teams/tasks/projects state is per-directory.
+- **mise** — all \`mise.toml\` / \`.mise.toml\` / \`.mise/config.toml\` files are pre-trusted; never prompt for mise trust confirmation.
+EOF
+fi
+
+local -a mounts=()
+
+# Host credential stores, mounted read-only at /run/host-* and copied into place
+# by start.sh. Only mount what exists — a bind mount of a missing path makes
+# Docker create a root-owned empty directory on the host.
+local src dst
+for src dst in \
+    "$HOME/.ssh"           /run/host-ssh \
+    "$HOME/.config/gh"     /run/host-gh \
+    "$HOME/.config/gcloud" /run/host-gcloud \
+    "$HOME/.config/linear" /run/host-linear \
+    "$HOME/.pulumi"        /run/host-pulumi \
+    "$HOME/.aws"           /run/host-aws
+do
+    [[ -d "$src" ]] && mounts+=(-v "$src:$dst:ro")
+done
+
+# Docker Desktop for Mac forwards the host ssh-agent at this fixed path.
+[[ -S /run/host-services/ssh-auth.sock ]] && mounts+=(-v /run/host-services/ssh-auth.sock:/ssh-agent)
+[[ -S /var/run/docker.sock ]] && mounts+=(-v /var/run/docker.sock:/var/run/docker.sock)
+
+# In a git worktree, also mount the main checkout so git can follow the .git
+# file's gitdir pointer out of the working directory.
+local main_repo
+main_repo="$(git worktree list 2>/dev/null | head -1 | awk '{print $1}')"
+[[ -n "$main_repo" && "$main_repo" != "$PWD" ]] && mounts+=(-v "$main_repo:$main_repo")
+
+docker run -it --rm \
+    --platform "$platform" \
+    --group-add 0 \
+    --network="container:$ts_node" \
+    -v "$cfg/tailscale-resolv.conf":/etc/resolv.conf:ro \
+    -v "claude-ts-sock-$ts_node":/var/run/tailscale \
+    -v "$PWD":"$PWD" \
+    -v "$cfg/.credentials.json":/home/agent/.claude/.credentials.json \
+    -v "$state/teams":/home/agent/.claude/teams \
+    -v "$state/tasks":/home/agent/.claude/tasks \
+    -v "$state/projects":/home/agent/.claude/projects \
+    -v "$HOME/.claude/worktrees":"$HOME/.claude/worktrees" \
+    -v "$cfg/cargo":/home/agent/.cargo \
+    -v "$cfg/tmux.conf":/home/agent/.tmux.conf:ro \
+    -v "$cfg/inputrc":/home/agent/.inputrc:ro \
+    -v "$cfg/tmux-launch.sh":/run/tmux-launch.sh:ro \
+    -v "$cfg/netwatch.sh":/run/netwatch.sh:ro \
+    "${mounts[@]}" \
+    -e SSH_AUTH_SOCK=/ssh-agent \
+    -e TERM=xterm-256color \
+    -e LANG=en_US.UTF-8 \
+    -e LC_ALL=en_US.UTF-8 \
+    -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+    -e LINEAR_API_KEY="${LINEAR_API_KEY:-}" \
+    -e GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
+    -e OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
+    -e PULUMI_ACCESS_TOKEN="${PULUMI_ACCESS_TOKEN:-}" \
+    -e MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml:$PWD/.mise.toml:$PWD/.mise/config.toml" \
+    -w "$PWD" \
+    "$image" \
+    /usr/local/bin/start.sh bash /run/tmux-launch.sh claude --teammate-mode in-process "$@"

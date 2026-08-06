@@ -1,0 +1,13 @@
+#!/usr/bin/env zsh
+# _claude_docker_sed_i <expr> <file>
+#
+# In-place sed that works with both BSD sed (macOS) and GNU sed (if the user has
+# gnu-sed first on PATH): `sed -i ''` and `sed -i` disagree on the backup
+# argument, but `-i.bak` is accepted by both.
+
+emulate -L zsh
+setopt local_options
+
+local expr="$1" file="$2"
+[[ -f "$file" ]] || return 0
+sed -i.claude-docker-bak "$expr" "$file" && rm -f "$file.claude-docker-bak"

@@ -1,0 +1,22 @@
+#!/usr/bin/env zsh
+# _claude_ts_online <container-name> <timeout-seconds>
+#
+# True only when the sidecar has an active session with the coordination server.
+# BackendState=Running alone is not enough — see the caller.
+
+emulate -L zsh
+setopt local_options
+
+local ts_name="$1" timeout="$2"
+local i json
+
+for (( i = 1; i <= timeout; i++ )); do
+    json="$(docker exec "$ts_name" tailscale status --json 2>/dev/null)"
+    if [[ -n "$json" ]] \
+        && [[ "$(print -r -- "$json" | jq -r '.BackendState')" == "Running" ]] \
+        && [[ "$(print -r -- "$json" | jq -r '.Self.Online')" == "true" ]]; then
+        return 0
+    fi
+    sleep 1
+done
+return 1
