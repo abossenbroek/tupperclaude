@@ -2,11 +2,9 @@
 #
 # tupperclaude (zsh) — run Claude Code in a sandboxed Docker container.
 #
-# Loading is deliberately zero-cost: this file only computes three paths and
-# registers autoloads. Every option is read at *call* time by the functions
-# themselves, never here, so `zstyle` lines work anywhere in .zshrc — before or
-# after the oh-my-zsh source line — and a shell that never invokes a
-# claude-docker command pays nothing for having the plugin installed.
+# Load is zero-cost: three paths and a set of autoloads. Options resolve at call
+# time, so `zstyle` lines work anywhere in .zshrc, before or after the oh-my-zsh
+# source line.
 
 0=${(%):-%N}
 
@@ -17,12 +15,9 @@ typeset -g TUPPERCLAUDE_VERSION=unknown
 
 fpath=("$TUPPERCLAUDE_ZSH_DIR/functions" "$TUPPERCLAUDE_ZSH_DIR/completions" $fpath)
 
-# The public commands: the names a user types, and the exact set the completion
-# below is bound to. Kept as an array rather than spelled out twice because the
-# compdef call and the autoload call would otherwise drift apart — and a command
-# missing from one of them fails silently, which is how the completion bug this
-# array exists to fix went unnoticed. The private _claude_docker_* helpers are
-# autoloaded separately: they are implementation detail and get no completion.
+# The public commands, shared by the autoload and the compdef below so the two
+# cannot drift. A command missing from either fails silently. The private
+# _claude_docker_* helpers are autoloaded separately and get no completion.
 typeset -ga _tupperclaude_commands=(
     tupperclaude
     claude-docker-arm
@@ -41,22 +36,14 @@ typeset -ga _tupperclaude_commands=(
     claude-ts-ensure
 )
 
-# Still no compinit here — it is slow and clobbers the first run's cache — but
-# the $fpath line above is NOT enough on its own under oh-my-zsh.
+# No compinit here: it is slow and clobbers the first run's cache. But $fpath
+# alone is not enough under oh-my-zsh, which adds only the plugin ROOT to $fpath,
+# runs compinit, and sources the plugin afterwards — leaving zsh/completions/
+# unscanned. compdef records the binding without loading _claude-docker, which
+# stays autoloaded from $fpath.
 #
-# omz adds the plugin's ROOT directory to $fpath, runs compinit, and only THEN
-# sources <plugin>.plugin.zsh (oh-my-zsh.sh: fpath at ~92, compinit at ~129,
-# source at ~206). This file therefore runs after compinit has already scanned,
-# and zsh/completions/ is a subdirectory omz's root-only convention knows
-# nothing about — so `claude-docker-arm<TAB>` completed nothing at all, in every
-# shell, for the entire documented install path. Re-running compinit would fix
-# it and charge every shell startup for the privilege; binding the completion
-# directly costs nothing and fixes it too.
-#
-# compdef records the binding without loading _claude-docker, which stays
-# autoloaded from $fpath on first actual use. The other ordering — a .zshrc that
-# sources this file and runs compinit afterwards — needs none of this: compdef
-# does not exist yet, and compinit then finds the file on $fpath by itself.
+# When compinit has not run yet (plugin sourced first), compdef does not exist
+# and compinit finds the file on $fpath unaided.
 (( ${+functions[compdef]} )) && compdef _claude-docker $_tupperclaude_commands
 
 autoload -Uz \

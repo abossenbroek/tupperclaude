@@ -53,6 +53,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y \
     openssh-client curl gnupg lsb-release ca-certificates \
     tmux ripgrep jq tzdata unzip \
+    zsh \
     postgresql-client default-mysql-client \
     clang clangd cmake build-essential \
     php php-cli php-mbstring php-xml php-curl \

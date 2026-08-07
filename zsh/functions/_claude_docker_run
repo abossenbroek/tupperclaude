@@ -192,40 +192,80 @@ if [[ "$_tc_network" == tailscale ]]; then
     fi
 
     netwatch_mount=(-v "$netwatch:/run/netwatch.sh:ro")
+fi
 
-    # Window 0 runs claude; window 1 is a plain shell with the gcloud ADC login
-    # pre-typed but NOT executed — one Enter away when a token expires; window 2
-    # watches the tailnet so a silent disconnect rings the bell instead of surfacing
-    # as mystery tool failures.
-    if ! { print -r -l >"$launcher" \
-        '#!/bin/bash' \
-        'tmux new-session -d -s main -n claude "$@"' \
-        'tmux new-window -t main: -n adc' \
-        '# Let bash paint its prompt first, or the pre-typed line renders twice.' \
-        'sleep 1' \
-        "tmux send-keys -t main:adc 'gcloud auth login --update-adc && gcloud auth application-default login'" \
-        'tmux new-window -t main: -n net bash /run/netwatch.sh' \
-        'tmux select-window -t main:claude' \
-        'exec tmux attach -t main' } 2>/dev/null
-    then
-        _claude_docker_err "could not write ${launcher:q}" "ls -ld ${_tc_state:q}"
-        return 1
-    fi
-else
-    # No sidecar, no tailnet — nothing to watch, so just claude + the ADC shell.
-    if ! { print -r -l >"$launcher" \
-        '#!/bin/bash' \
-        'tmux new-session -d -s main -n claude "$@"' \
-        'tmux new-window -t main: -n adc' \
-        '# Let bash paint its prompt first, or the pre-typed line renders twice.' \
-        'sleep 1' \
-        "tmux send-keys -t main:adc 'gcloud auth login --update-adc && gcloud auth application-default login'" \
-        'tmux select-window -t main:claude' \
-        'exec tmux attach -t main' } 2>/dev/null
-    then
-        _claude_docker_err "could not write ${launcher:q}" "ls -ld ${_tc_state:q}"
-        return 1
-    fi
+# ---- the tmux window set ----------------------------------------------------
+#
+# Window 0 is ALWAYS claude, is created first from the command actually invoked,
+# and is selected again before attach — so however many tool windows get added
+# below, attaching lands you in Claude. Everything else is appended after it and
+# never reorders it.
+#
+# With every option on the set is:
+#
+#   [claude] [aws] [gcloud] [k9s] [tailscale] [zsh]
+#
+# The auth windows PRE-TYPE their command without executing it. That is the whole
+# design and not a half-measure: the only thing you do is press Enter, and once
+# you have, the command is in that shell's history — so when the lease expires
+# an hour later you press Up and Enter rather than remembering the flag soup.
+# Executing it for you would be worse: these commands print a URL and block, and
+# they are exactly the commands you sometimes want to edit first (a different
+# --profile, a different account) before they run.
+#
+# k9s and the tailnet monitor are RUN, not pre-typed: a TUI and a watcher have
+# nothing to decide, so pre-typing them would just be an Enter you always press.
+local -a launch=(
+    '#!/bin/bash'
+    'tmux new-session -d -s main -n claude "$@"'
+)
+
+# One `sleep 1` for the whole launcher, not one per window: bash must paint its
+# prompt before any send-keys arrives, or the pre-typed line renders twice.
+local -a pretyped=()
+
+if _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
+    launch+=('tmux new-window -t main: -n aws')
+    # --no-browser: there is no browser in the container to open, and without
+    # the flag the CLI waits on one before falling back to printing the URL.
+    pretyped+=("tmux send-keys -t main:aws 'aws sso login --no-browser'")
+fi
+
+if _claude_docker_opt -b gcloud CLAUDE_DOCKER_INCLUDE_GCLOUD; then
+    launch+=('tmux new-window -t main: -n gcloud')
+    pretyped+=("tmux send-keys -t main:gcloud 'gcloud auth login --update-adc --no-launch-browser && gcloud auth application-default login --no-launch-browser'")
+fi
+
+if _claude_docker_opt -b k8s CLAUDE_DOCKER_INCLUDE_K8S; then
+    # Wrapped, because a tmux window dies with its command: with no reachable
+    # cluster k9s exits at once, the window vanishes, and the option looks like
+    # it never installed. The wrapper keeps the error on screen and leaves a
+    # shell behind. netwatch needs none of this — it loops forever.
+    launch+=("tmux new-window -t main: -n k9s bash -c 'k9s; printf \"\\nk9s exited — Enter for a shell\\n\"; exec bash'")
+fi
+
+if [[ "$_tc_network" == tailscale ]]; then
+    launch+=('tmux new-window -t main: -n tailscale bash /run/netwatch.sh')
+fi
+
+# A tmux window dies with its command, so images predating zsh need the fallback.
+# `command -v` rather than `exec zsh || exec bash`: a failed exec terminates the
+# shell instead of returning non-zero.
+launch+=("tmux new-window -t main: -n zsh bash -c 'command -v zsh >/dev/null && exec zsh || exec bash'")
+
+if (( ${#pretyped} )); then
+    launch+=('# Let bash paint its prompt first, or the pre-typed line renders twice.' 'sleep 1')
+    launch+=("${pretyped[@]}")
+fi
+
+launch+=(
+    'tmux select-window -t main:claude'
+    'exec tmux attach -t main'
+)
+
+if ! print -r -l -- "${launch[@]}" >"$launcher" 2>/dev/null; then
+    _claude_docker_err "could not write ${launcher:q}" "ls -ld ${_tc_state:q}"
+    return 1
 fi
 
 # Tell Claude what kind of machine it is running on.
