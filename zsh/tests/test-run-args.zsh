@@ -245,6 +245,57 @@ check "aws mismatch (playwright): the fix does NOT name the playwright builder" 
 zstyle -d ':omz:plugins:tupperclaude' aws
 unset FAKE_DOCKER_IMAGE_LABELS
 
+# --- docker-sock, and the gid that travels with it ----------------------------
+#
+# This option decides whether the sandbox is a security boundary at all: the
+# docker socket is root-equivalent on the host. It shipped with NO coverage in
+# either state, which is how `--group-add 0` came to be passed unconditionally
+# while both the README and the flag's own comment claimed it accompanied the
+# mount. Nothing encoded the intent, so the comment was the only statement of
+# it — and a comment cannot fail.
+#
+# The socket must exist on the host for the mount to be added at all, so skip
+# rather than assert a falsehood on a machine without one.
+
+if [[ -S /var/run/docker.sock ]]; then
+    : >$FAKE_DOCKER_LOG
+    _claude_docker_ctx arm64 base || exit 1
+    _claude_docker_run arm64 base >/dev/null 2>&1
+    load_docker_log
+    records_matching run -it --rm
+    if (( ${#reply} == 1 )); then
+        local sock_rec=$reply[1]
+        argv_has_pair "$sock_rec" -v /var/run/docker.sock:/var/run/docker.sock
+        check "docker-sock on (default): the socket is mounted" $?
+        argv_has_pair "$sock_rec" --group-add 0
+        check "docker-sock on (default): --group-add 0 accompanies the mount" $?
+    else
+        not_ok "docker-sock on: no run record found"
+    fi
+
+    zstyle ':omz:plugins:tupperclaude' docker-sock off
+    : >$FAKE_DOCKER_LOG
+    _claude_docker_run arm64 base >/dev/null 2>&1
+    load_docker_log
+    records_matching run -it --rm
+    if (( ${#reply} == 1 )); then
+        local nosock_rec=$reply[1]
+        argv_has "$nosock_rec" /var/run/docker.sock:/var/run/docker.sock
+        (( $? != 0 ))
+        check "docker-sock off: the socket is NOT mounted" $?
+        # The point of the option: gid 0 must not survive into the one
+        # configuration a user chose in order to tighten the container.
+        argv_has "$nosock_rec" --group-add
+        (( $? != 0 ))
+        check "docker-sock off: --group-add 0 is gone too, not just the mount" $?
+    else
+        not_ok "docker-sock off: no run record found"
+    fi
+    zstyle -d ':omz:plugins:tupperclaude' docker-sock
+else
+    not_ok "docker-sock: skipped — no /var/run/docker.sock on this host to mount"
+fi
+
 # --- MACHINE.md ownership -----------------------------------------------------
 #
 # This is the one thing the run path writes into the user's repository, so who

@@ -377,14 +377,23 @@ host, not about containing hostile code. Turning it off would also break every
 workflow that builds or runs containers inside the sandbox, and `MACHINE.md` tells
 Claude that `docker` is available.
 
-Turn it off and you get a real boundary, at the cost of docker-in-the-sandbox:
+Turn it off to close the escape route, at the cost of docker-in-the-sandbox:
 
 ```zsh
 zstyle ':omz:plugins:tupperclaude' docker-sock off
 ```
 
-Note this is about the *sandbox*, not the network: `--group-add 0` accompanies the
-mount only so the container's user can read the socket, and widens nothing by itself.
+Be precise about what that buys you. It removes the socket, and with it the ability
+of anything in the container to start a privileged container on your host. It does
+**not** make the sandbox safe to point at untrusted code: the container still holds
+your forwarded SSH agent and copies of `~/.ssh`, `~/.config/gh`, `~/.config/gcloud`,
+`~/.aws`, `~/.pulumi` and `~/.config/linear`, still receives whichever API keys you
+have exported, and still has read-write access to `$PWD` and `~/.claude/worktrees`.
+The threat it stops is *escape to the host*, not *access to your credentials*.
+
+`--group-add 0` is passed only when the socket is actually mounted — gid 0 exists so
+the container's user can read it, and it is dropped along with the mount when this
+option is off.
 
 ### `TS_AUTHKEY`
 

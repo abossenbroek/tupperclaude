@@ -331,8 +331,21 @@ mounts+=(-v /run/host-services/ssh-auth.sock:/ssh-agent)
 #
 # Set `docker-sock` off to get a real boundary, at the cost of docker-in-the-
 # sandbox. The README says the same thing in the same words.
+#
+# --group-add 0 travels WITH the mount and only with it. gid 0 is what lets the
+# agent user read the socket, whose group inside Docker Desktop's VM is root; it
+# is meaningless without the socket, and passing it anyway would hand gid 0 to
+# the container in exactly the configuration a user chose in order to tighten
+# it. It used to sit unconditionally in the argv below, which made the README's
+# claim that it "accompanies the mount" false, and which no test would have
+# caught — this option had no coverage in either state until the assertions in
+# test-run-args.zsh that accompany this comment.
+local -a sock_args=()
 if _claude_docker_opt -b docker-sock CLAUDE_DOCKER_DOCKER_SOCK 1; then
-    [[ -S /var/run/docker.sock ]] && mounts+=(-v /var/run/docker.sock:/var/run/docker.sock)
+    if [[ -S /var/run/docker.sock ]]; then
+        mounts+=(-v /var/run/docker.sock:/var/run/docker.sock)
+        sock_args=(--group-add 0)
+    fi
 fi
 
 # In a git worktree, also mount the main checkout so git can follow the .git
@@ -352,11 +365,8 @@ main_repo="$(command git worktree list --porcelain 2>/dev/null \
 
 command docker run -it --rm \
     --platform "$_tc_platform" \
-    `# gid 0 so the agent user can read the bind-mounted docker socket, whose` \
-    `# group inside Docker Desktop's VM is root. It widens nothing on its own —` \
-    `# the socket mount above is what carries the privilege, and it is what the` \
-    `# docker-sock option turns off. See the comment there.` \
-    --group-add 0 \
+    `# Empty unless the docker socket is actually mounted — see sock_args above.` \
+    "${sock_args[@]}" \
     --name "$_tc_name" \
     --label "tupperclaude.dir=$PWD" \
     --label "tupperclaude.arch=$_tc_arch" \
