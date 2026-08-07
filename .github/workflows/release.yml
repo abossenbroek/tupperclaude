@@ -6,8 +6,13 @@ on:
   push:
     tags: ['v*']
 
+# id-token is what makes the signing keyless: the runner exchanges a short-lived
+# OIDC token for a Sigstore certificate, and no private key exists to leak or
+# rotate. Both signatures below depend on it.
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -26,6 +31,15 @@ jobs:
             echo "tag v$tag does not match .version ($file)"; exit 1; }
           echo "version=$tag" >> "$GITHUB_ENV"
 
+      - name: Check the tag is signed
+        run: |
+          set -e
+          # `make release` signs with git tag -s. An unsigned tag means the tag
+          # object was written by something other than that path — the one signal
+          # available here that the release was not cut as intended.
+          git cat-file tag "$GITHUB_REF_NAME" | grep -qE 'BEGIN (SSH|PGP) SIGNATURE' || {
+            echo "tag $GITHUB_REF_NAME is not signed; cut it with 'make release'"; exit 1; }
+
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y zsh
 
@@ -41,6 +55,25 @@ jobs:
             -o "tupperclaude-${version}.tar.gz" "$GITHUB_REF_NAME"
           echo "sha256=$(sha256sum "tupperclaude-${version}.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
+      # Binds the tarball's digest to this repository, workflow and commit, in a
+      # public transparency log. `gh attestation verify` is the whole client
+      # side of it — nothing to download, no key to distribute.
+      - name: Attest the tarball's provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: tupperclaude-${{ env.version }}.tar.gz
+
+      - uses: sigstore/cosign-installer@v3
+
+      # The same guarantee in a form that does not need the gh CLI or a GitHub
+      # account to check. Keyless, so the certificate identity IS the proof:
+      # verification pins the workflow that signed, not a key someone holds.
+      - name: Sign the tarball
+        run: |
+          cosign sign-blob --yes \
+            --bundle "tupperclaude-${version}.tar.gz.sigstore" \
+            "tupperclaude-${version}.tar.gz"
+
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,7 +81,8 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "v${version}" \
             --generate-notes \
-            "tupperclaude-${version}.tar.gz"
+            "tupperclaude-${version}.tar.gz" \
+            "tupperclaude-${version}.tar.gz.sigstore"
 
       # The tarball URL only resolves once the release exists, so the formula is
       # updated after it, not before.
@@ -83,7 +117,11 @@ jobs:
           p.write_text(s)
           PY
 
-          git clone -q "https://x-access-token:${TAP_TOKEN}@github.com/abossenbroek/homebrew-tupperclaude.git" /tmp/tap
+          # --branch main, not the default branch: the branch brew serves is a
+          # property of the tap that can be changed in its settings, and a
+          # release must not follow it silently.
+          git clone -q --branch main \
+            "https://x-access-token:${TAP_TOKEN}@github.com/abossenbroek/homebrew-tupperclaude.git" /tmp/tap
           cp Formula/tupperclaude.rb /tmp/tap/Formula/tupperclaude.rb
           cd /tmp/tap
           git config user.name "github-actions[bot]"

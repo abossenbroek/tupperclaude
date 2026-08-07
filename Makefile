@@ -94,7 +94,12 @@ release: ## Tag a release from main: make release VERSION=0.2.0
 	@echo "$(VERSION)" > .version
 	@git add .version
 	@git commit -q -m "release: v$(VERSION)"
-	@git tag -a "v$(VERSION)" -m "v$(VERSION)"
+	@git tag -s "v$(VERSION)" -m "v$(VERSION)" 2>/dev/null \
+	  || { echo "cannot sign the tag — no signing key configured."; \
+	       echo "  git config gpg.format ssh"; \
+	       echo "  git config user.signingkey ~/.ssh/id_ed25519.pub"; \
+	       echo "then register that key at github.com/settings/ssh/new as a Signing Key."; \
+	       git reset -q --hard HEAD~1; exit 1; }
 	@echo ""
 	@echo "Tagged v$(VERSION). Push it to trigger the release:"
 	@echo "  git push origin main --follow-tags"
