@@ -75,6 +75,30 @@ brew-publish: ## Sync the tested formula into the Homebrew tap and push
 
 test-all: check test-install test-brew ## Everything, including the slow tests
 
+# Releases are cut from main, which only ever holds released code. Work lands on
+# develop; a release PR moves develop to main, and this tags it.
+#
+# The tag is the trigger: CI builds the tarball, creates the GitHub release, and
+# pushes the stable stanza to the Homebrew tap. Nothing here touches the tap.
+release: ## Tag a release from main: make release VERSION=0.2.0
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=0.2.0"; exit 1; }
+	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' \
+	  || { echo "VERSION must be x.y.z (no leading v, no suffix): got '$(VERSION)'"; exit 1; }
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = main \
+	  || { echo "releases are cut from main; you are on $$(git rev-parse --abbrev-ref HEAD)"; exit 1; }
+	@git diff --quiet && git diff --cached --quiet \
+	  || { echo "working tree is dirty — commit or stash first"; exit 1; }
+	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null \
+	  && { echo "tag v$(VERSION) already exists"; exit 1; } || true
+	@$(MAKE) --no-print-directory check
+	@echo "$(VERSION)" > .version
+	@git add .version
+	@git commit -q -m "release: v$(VERSION)"
+	@git tag -a "v$(VERSION)" -m "v$(VERSION)"
+	@echo ""
+	@echo "Tagged v$(VERSION). Push it to trigger the release:"
+	@echo "  git push origin main --follow-tags"
+
 hooks: ## Point git at .githooks (installs the pre-commit gate)
 	@git config core.hooksPath .githooks
 	@echo "core.hooksPath = .githooks — pre-commit now runs 'make check'."

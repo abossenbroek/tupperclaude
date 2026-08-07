@@ -57,6 +57,35 @@ This is not hypothetical. The completion-binding bug in `zsh/tupperclaude.zsh` w
 invisible to a 597-test suite because every test sourced the plugin by absolute path and
 none started a real shell. The suite was green and the feature was entirely broken.
 
+## Filing a bug
+
+Open a [bug report](https://github.com/abossenbroek/tupperclaude/issues/new?template=bug_report.yml).
+The form asks for `claude-docker-doctor` output, the command you ran, how tupperclaude is
+installed and which container engine — the four things nearly every diagnosis here needs,
+and the four that are slowest to chase afterwards. Blank issues are off for that reason.
+
+Two things worth checking first, because they account for most reports:
+
+- **Read the error.** Every error in this codebase ends with a command you can paste. If
+  it named one, run it.
+- **A non-Docker-Desktop engine loses SSH agent forwarding.** OrbStack and Colima do not
+  synthesise `/run/host-services/ssh-auth.sock`, so `git push` over SSH fails inside the
+  sandbox and `claude-docker-doctor` exits non-zero. Known limitation, in README.md.
+
+**Security problems do not go in the issue tracker** — see [SECURITY.md](SECURITY.md).
+The sandbox holds your SSH agent and cloud credentials, so a public issue is the wrong
+first move.
+
+## Branches
+
+- **`develop`** is the integration branch. Open your PR against it.
+- **`main`** only ever holds released code, and is what the Homebrew tap's `--HEAD`
+  serves. It moves by a release PR from `develop`, then a tag.
+
+Releases are SemVer and cut from `main` with `make release VERSION=x.y.z`, which runs
+`make check`, bumps `.version`, commits and tags. Pushing the tag is what triggers CI to
+build the tarball, create the GitHub release and push the stable stanza to the tap.
+
 ## Before you open a pull request
 
 ```zsh
@@ -79,9 +108,11 @@ minutes. CI runs the first; the second is macOS-only and manual.
 
 Match what is already there rather than what you would have written.
 
-- **Comments explain why, not what.** The existing comments are dense and argumentative
-  on purpose — they record the failure that motivated the code. If you change behaviour
-  that a comment justifies, update the comment in the same commit.
+- **Comments carry what the code cannot.** Non-obvious mechanics, invariants, ordering
+  constraints, units. Not narrative history, not a defence of the choice against an
+  imagined objection, not a restatement of the line below. If a comment can be deleted
+  without the reader losing anything, delete it. Heavily commented code is usually code
+  that should have been clearer instead.
 - **Every error ends with something the user can paste.** `_claude_docker_err` takes the
   message first and pasteable commands after; keep prose out of that second position, it
   renders as a command.
@@ -98,9 +129,12 @@ AI assistance, keep the `Co-Authored-By:` trailer; it is part of the disclosure.
 
 ## Code of conduct
 
-Be decent. Assume the other person is competent and acting in good faith, ask before
-assuming a mistake, and keep criticism aimed at code rather than people. Maintainer time
-is donated; a contribution that ignores the gates above spends it badly.
+[Contributor Covenant 2.1](CODE_OF_CONDUCT.md) applies, with reports to
+anton@bossenbroek.ai.
+
+The working norm underneath it: assume the other person is competent and acting in good
+faith, ask before assuming a mistake, and keep criticism aimed at code rather than people.
+Maintainer time is donated; a contribution that ignores the gates above spends it badly.
 
 Undisclosed AI assistance, or PRs whose descriptions are visibly machine-written, may be
 closed without detailed review.

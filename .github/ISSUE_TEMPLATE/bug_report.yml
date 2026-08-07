@@ -1,0 +1,86 @@
+name: Bug report
+description: Something does not work the way the docs say it does
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a **security** problem? Do not file it here — see
+        [SECURITY.md](../blob/main/SECURITY.md) for private reporting.
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: claude-docker-doctor output
+      description: >
+        Paste the full output. This answers most of the setup questions a
+        diagnosis needs in one go. Redact anything you consider sensitive —
+        note that you redacted it rather than deleting the line.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: The command you ran
+      placeholder: claude-docker-arm
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: What you expected, and what happened
+      description: >
+        Include the error output verbatim. If a step appeared to succeed but
+        did the wrong thing, say which step and what you observed instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is tupperclaude installed?
+      options:
+        - oh-my-zsh plugin
+        - Homebrew
+        - manual source line in .zshrc
+        - zinit / antigen / zplug
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Container engine
+      description: >
+        Non-Docker-Desktop engines do not provide the forwarded SSH agent
+        socket, which is a known limitation rather than a bug.
+      options:
+        - Docker Desktop
+        - OrbStack
+        - Colima
+        - other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: version
+    attributes:
+      label: Versions
+      description: Output of `claude-docker-status --version` and `docker --version`.
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: I read the error message and any pasteable fix it suggested
+          required: true
+        - label: I searched existing issues
+          required: true
