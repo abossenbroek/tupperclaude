@@ -214,6 +214,37 @@ aws_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
 check "aws: an image with no label is not accused of a mismatch" $? "got: $aws_out"
 unset FAKE_DOCKER_IMAGE_LABELS
 
+# --- aws mismatch: playwright arm (suffix-stripping and base-image comment) ---
+#
+# The playwright image inherits the aws setting from the base image, so
+# rebuilding playwright re-stamps the same (base-decided) value and the warning
+# would return forever. The fix command must point to the base builder and carry
+# a comment explaining why. This test anchors on the suffix-stripping and the
+# comment, not on generic "aws" mentions.
+
+_claude_docker_ctx arm64 playwright || exit 1
+
+export FAKE_DOCKER_IMAGE_LABELS="$_tc_image=tupperclaude.aws=false"
+zstyle ':omz:plugins:tupperclaude' aws on
+local playwright_aws_out
+playwright_aws_out="$(_claude_docker_run arm64 playwright 2>&1 1>/dev/null)"
+check "aws mismatch (playwright): the run still succeeds — this is a warning, not a refusal" $?
+[[ $playwright_aws_out == *'aws option is on'*'built with aws=false'* ]]
+check "aws mismatch (playwright): the warning states both the option and the label it disagrees with" $? "got: $playwright_aws_out"
+# Anchored on BOTH the base-image explanation comment AND the stripped command, to prove
+# the suffix-stripping ran (not that it fell back to a substring match). The comment is
+# the distinguishing marker; "claude-docker-build-arm" alone would match any architect's rebuild.
+[[ $playwright_aws_out == *'# the base image decides this; playwright inherits it'* ]]
+check "aws mismatch (playwright): the fix command carries the explanation comment" $? "got: $playwright_aws_out"
+# The stripping itself, stated directly: offering the -playwright builder here
+# would send the user round a loop that re-stamps the inherited value and
+# re-emits this same warning. The comment above can survive a wrong command;
+# this cannot.
+[[ $playwright_aws_out != *claude-docker-build-arm-playwright* ]]
+check "aws mismatch (playwright): the fix does NOT name the playwright builder" $? "got: $playwright_aws_out"
+zstyle -d ':omz:plugins:tupperclaude' aws
+unset FAKE_DOCKER_IMAGE_LABELS
+
 # --- MACHINE.md ownership -----------------------------------------------------
 #
 # This is the one thing the run path writes into the user's repository, so who
