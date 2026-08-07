@@ -190,8 +190,11 @@ zstyle ':omz:plugins:tupperclaude' aws on
 local aws_out
 aws_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
 check "aws mismatch: the run still succeeds — this is a warning, not a refusal" $?
-[[ $aws_out == *aws* ]]
-check "aws mismatch: the run path notices the image disagrees with the option" $? "got: $aws_out"
+# Anchored on both halves of the mismatch — the option's state AND the label's
+# — not merely on the substring "aws", which any mention of the option or of a
+# host-aws mount would have satisfied whether or not the two were compared.
+[[ $aws_out == *'aws option is on'*'built with aws=false'* ]]
+check "aws mismatch: the warning states both the option and the label it disagrees with" $? "got: $aws_out"
 [[ $aws_out == *claude-docker-build-arm* ]]
 check "aws mismatch: the warning names the rebuild command" $? "got: $aws_out"
 
