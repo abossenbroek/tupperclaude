@@ -28,7 +28,7 @@ ZSH_FILES = \
 	zsh/completions/_claude-docker
 
 .DEFAULT_GOAL := help
-.PHONY: help lint test check test-install test-all hooks unhooks
+.PHONY: help lint test check test-install test-brew test-all hooks unhooks
 
 help: ## Show this help
 	@echo "tupperclaude make targets:"
@@ -52,7 +52,10 @@ check: lint test ## Lint + suite. The pre-commit gate.
 test-install: ## Install variations in throwaway Linux containers (needs Docker)
 	@zsh/tests/docker/run-install-matrix.sh
 
-test-all: check test-install ## Everything, including the slow container tests
+test-brew: ## Package the working tree and build the Homebrew formula (needs brew)
+	@zsh/tests/brew/run-formula-test.sh
+
+test-all: check test-install test-brew ## Everything, including the slow tests
 
 hooks: ## Point git at .githooks (installs the pre-commit gate)
 	@git config core.hooksPath .githooks

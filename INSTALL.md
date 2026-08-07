@@ -35,6 +35,29 @@ the root of the plugin directory named `<plugin-dir-name>.plugin.zsh`. That file
 implementation in `zsh/tupperclaude.zsh`. You don't need to know this to install the
 plugin; it's why the ordinary clone-into-plugins-dir workflow below just works.
 
+## Homebrew
+
+A formula, not a cask — casks install pre-built macOS artifacts, and this is a zsh
+plugin installed from source. There is no tagged release yet, so it is `--HEAD` only:
+
+```zsh
+brew tap abossenbroek/tap
+brew install --HEAD tupperclaude
+```
+
+Homebrew installs the files but cannot edit your `~/.zshrc`, so add the source line
+yourself (`brew info tupperclaude` repeats it):
+
+```zsh
+source "$(brew --prefix)/opt/tupperclaude/share/tupperclaude/tupperclaude.plugin.zsh"
+```
+
+Completions register themselves either side of your `compinit` — nothing to add.
+
+`jq` and `zsh` come in as formula dependencies. Docker Desktop deliberately does not:
+it is a cask, and the plugin's own preflight reports a missing Docker better than a
+failed `brew install` would.
+
 ## oh-my-zsh
 
 ```zsh
