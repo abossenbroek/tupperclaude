@@ -38,7 +38,7 @@ jobs:
           # git archive, so the tarball holds exactly what is tracked — the same
           # contents `make test-brew` builds against locally.
           git archive --format=tar.gz --prefix="tupperclaude-${version}/" \
-            -o "tupperclaude-${version}.tar.gz" "$GITHUB_REF_NAME"
+            -o "tupperclaude-${version}.tar.gz" HEAD
           echo "sha256=$(sha256sum "tupperclaude-${version}.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
       - name: Create the GitHub release
