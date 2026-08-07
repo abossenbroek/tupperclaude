@@ -408,6 +408,18 @@ destructive_records
 (( ${#reply} == 0 ))
 check "clean --force without -y: removes nothing" $? "${reply[@]}"
 
+# --dry-run never needs -y at all, but the --force guard runs BEFORE the
+# dry-run early return: --force alone must still be rejected rather than let
+# --dry-run quietly excuse the missing -y and print a plan anyway.
+setup_world
+: >$FAKE_DOCKER_LOG
+out="$(claude-docker-clean --dry-run --force 2>&1)"
+rc=$?
+(( rc != 0 ))
+check "clean --dry-run --force without -y: returns non-zero" $? "rc=$rc"
+[[ $out == *'tupperclaude: error:'* && $out == *--force* && $out == *--yes* ]]
+check "clean --dry-run --force without -y: says it only applies with -y" $? "got: $out"
+
 # ============================================================================
 # an unparseable image size must not read as "free"
 #
