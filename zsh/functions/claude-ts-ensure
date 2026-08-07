@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# claude-ts-ensure [container-name] [tailnet-hostname]
+# claude-ts-ensure <container-name> [tailnet-hostname] [state-root]
 #
 # Ensure a persistent Tailscale sidecar is running, so a claude-docker container
 # can join its network namespace with `--network=container:<name>` and reach the
@@ -12,24 +12,53 @@
 # The node is persistent: state lives in a named volume so the same node
 # re-appears across restarts instead of churning the admin console. The auth key
 # is only consumed on first creation — use a reusable, tagged key.
+#
+# <state-root> is optional and is NOT derived here: this function resolves no
+# paths of its own, because the caller's paths depend on the variant matrix
+# (_claude_docker_ctx) and a second, independent derivation is exactly how the
+# resolv.conf came to be written to one directory and mounted from another. When
+# given, the generated tailscale-resolv.conf is written there and it is the
+# caller's job to mount it; when omitted, only the sidecar is ensured.
 
 emulate -L zsh
 # noksharrays: array expansion below (_tc_check_fix, health) assumes 1-based
 # zsh indexing.
 setopt local_options noksharrays
 
-local ts_name="${1:-claude-ts}"
+local ts_name="${1:-}"
 local ts_host_in="${2:-}"
-local cfg="${CLAUDE_DOCKER_HOME:-$HOME/.config/claude-docker}"
+local state_root="${3:-}"
+
+# This is a public command, so bad input must fail here and now. Without this,
+# `claude-ts-ensure --help` used to run `docker rm -f --help` and then spend 45
+# seconds printing jq parse errors.
+if [[ -z "$ts_name" || -n "${ts_name//[A-Za-z0-9_.-]/}" || "$ts_name" == -* ]]; then
+    _claude_docker_err "claude-ts-ensure needs a container name (letters, digits, '_', '.', '-')" \
+        'claude-ts-ensure claude-ts-myproject' \
+        'you probably want a claude-docker-* command instead; this is a plumbing command'
+    return 1
+fi
 
 # The joined container keeps its own /etc/resolv.conf, so MagicDNS names won't
 # resolve unless we point it at the tailnet resolver (100.100.100.100). MagicDNS
 # forwards non-tailnet queries upstream; 1.1.1.1 is a fallback for when MagicDNS
 # is off/down, and timeout:1 attempts:1 bounds the penalty in that case. The
 # claude-docker images mount this read-only.
-mkdir -p "$cfg"
-printf 'nameserver 100.100.100.100\nnameserver 1.1.1.1\noptions timeout:1 attempts:1\n' \
-    >"$cfg/tailscale-resolv.conf"
+if [[ -n "$state_root" ]]; then
+    if ! command mkdir -p "$state_root"; then
+        _claude_docker_err "could not create $state_root" "ls -ld ${state_root:h:q}"
+        return 1
+    fi
+    if ! { print -r -- 'nameserver 100.100.100.100' \
+                       'nameserver 1.1.1.1' \
+                       'options timeout:1 attempts:1' \
+             >"$state_root/tailscale-resolv.conf" } 2>/dev/null
+    then
+        _claude_docker_err "could not write $state_root/tailscale-resolv.conf" \
+            "ls -ld ${state_root:q}"
+        return 1
+    fi
+fi
 
 # The sidecar owns tailscaled; containers that join its netns need its control
 # socket too, or the `tailscale` CLI has nothing to talk to. TS_SOCKET moves the
@@ -42,7 +71,8 @@ local sock_vol="claude-ts-sock-$ts_name"
 # create path below rebuilds it. The node identity lives in the state volume,
 # which survives, so this doesn't churn the admin console.
 if command docker inspect "$ts_name" >/dev/null 2>&1; then
-    if ! command docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$ts_name" | grep -q "$sock_vol"; then
+    if ! command docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$ts_name" \
+        | command grep -q "$sock_vol"; then
         _claude_docker_warn "recreating Tailscale sidecar '$ts_name' to share its tailscaled socket…"
         command docker rm -f "$ts_name" >/dev/null
     fi
@@ -63,8 +93,14 @@ if [[ "$running" == "true" ]]; then
     command docker restart "$ts_name" >/dev/null
 elif command docker inspect "$ts_name" >/dev/null 2>&1; then
     # Exists but stopped → start it.
+    _claude_docker_info "starting Tailscale sidecar '$ts_name'…"
     command docker start "$ts_name" >/dev/null
 else
+    # The auth key is consumed ONLY here, on first creation: an existing sidecar
+    # restarts and reconnects from its state volume without one. That is why the
+    # check lives in this branch and not in the caller — refusing to run for a
+    # missing key that would never be read is a bug, not a safeguard.
+    #
     # The value is resolved here (docker run needs the actual key), but the
     # diagnostic path is delegated to _claude_docker_check so the guidance text
     # for a missing/unresolvable key lives in one place.
@@ -85,11 +121,11 @@ else
     # hash-truncate anything longer rather than fail to come up.
     local ts_host="${ts_host_in:-$ts_name}"
     if (( ${#ts_host} > 63 )); then
-        local h="$(printf '%s' "$ts_host" | command shasum | cut -c1-8)"
+        local h="$(printf '%s' "$ts_host" | command shasum | command cut -c1-8)"
         ts_host="${ts_host[1,54]}-$h"
     fi
 
-    print -u2 "claude-ts-ensure: creating Tailscale sidecar '$ts_name'…"
+    _claude_docker_info "creating Tailscale sidecar '$ts_name'…"
     command docker run -d --name "$ts_name" --restart unless-stopped \
         --cap-add=net_admin --cap-add=net_raw \
         --device=/dev/net/tun \
@@ -108,8 +144,12 @@ fi
 # Wait for the node to be genuinely online — not merely to have an address.
 _claude_ts_online "$ts_name" 45 && return 0
 
+# The $( ) must be quoted inside ${(f)…} or a health line containing spaces is
+# split into several; the price is that no health at all yields one EMPTY field,
+# which would print a stray blank line under the error — so prune that case.
 local -a health
-health=("${(f)$(command docker exec "$ts_name" tailscale status --json 2>/dev/null \
-    | command jq -r '.Health[]? | "  health: " + .')}")
+health=("${(f)"$(command docker exec "$ts_name" tailscale status --json 2>/dev/null \
+    | command jq -r '.Health[]? | "  health: " + .' 2>/dev/null)"}")
+(( ${#health} == 1 )) && [[ -z "${health[1]}" ]] && health=()
 _claude_docker_err "Tailscale sidecar '$ts_name' did not come online within 45s." \
     "${health[@]}" "docker logs $ts_name"

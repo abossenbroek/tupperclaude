@@ -1,4 +1,6 @@
 #!/usr/bin/env zsh
 # Build the linux/amd64 base image: native on Intel Macs, QEMU cross-build on
 # Apple Silicon (slow, but produces an image that runs on x86_64 hosts).
+
+[[ "${1-}" == (-h|--help) ]] && { _claude_docker_help claude-docker-build-amd64; return 0 }
 _claude_docker_build amd64 base "$@"

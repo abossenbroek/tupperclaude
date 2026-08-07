@@ -42,7 +42,8 @@
 # aws — include the AWS CLI v2 in the built image
 #
 # Adds build time and image size, so it defaults to off. Takes effect on the
-# next `claude-docker-*-build`, not retroactively on an image already built.
+# next `claude-docker-build-arm` / `claude-docker-build-amd64`, not
+# retroactively on an image already built.
 #
 # Env var: CLAUDE_DOCKER_INCLUDE_AWS
 # ---------------------------------------------------------------------------
@@ -60,7 +61,9 @@
 #
 # Env var: CLAUDE_DOCKER_HOME
 # ---------------------------------------------------------------------------
-# zstyle ':omz:plugins:tupperclaude' home '~/.config/claude-docker'
+# Unquoted, so the tilde actually expands. Quoted ('~/...') the value stays a
+# literal '~' and the run path would mkdir -p a directory named '~' in $PWD.
+# zstyle ':omz:plugins:tupperclaude' home ~/.config/claude-docker
 
 # ---------------------------------------------------------------------------
 # dockerfile — override the build recipe
@@ -71,6 +74,9 @@
 #
 # Default: <repo>/docker/Dockerfile  (or Dockerfile.playwright)
 #
+# Give an absolute path. As with `home` above, a quoted '~/...' is NOT expanded
+# — write ~/src/Dockerfile unquoted, or "$HOME/src/Dockerfile".
+#
 # Env var: CLAUDE_DOCKER_DOCKERFILE
 # ---------------------------------------------------------------------------
-# zstyle ':omz:plugins:tupperclaude' dockerfile '/path/to/Dockerfile'
+# zstyle ':omz:plugins:tupperclaude' dockerfile /path/to/Dockerfile

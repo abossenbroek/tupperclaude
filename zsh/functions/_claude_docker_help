@@ -1,0 +1,136 @@
+#!/usr/bin/env zsh
+# _claude_docker_help <command-name>
+#
+# Print the usage block for one tupperclaude command. Every command's
+# `-h|--help` routes through here so the shape is identical everywhere:
+#
+#   <name> — <one-line summary>
+#
+#   Usage: ...
+#
+#   <what it does, and what it needs>
+#
+#   See also: ...
+#
+# Keeping the text here rather than in each wrapper is what makes that
+# consistency mechanical instead of aspirational — the wrappers stay one line
+# of dispatch plus one line of help.
+#
+# The `run` shape deliberately reserves --help for the wrapper: `claude-docker-arm
+# --help` describes the wrapper, and `claude-docker-arm -- --help` passes --help
+# through to claude. Without the reservation there is no way to ask the wrapper
+# itself for help.
+
+emulate -L zsh
+setopt local_options
+
+local cmd=${1-}
+local shape=util summary='' detail='' requires=''
+# Non-empty $usage replaces the usage line the shape would otherwise produce,
+# for the two commands that take arguments of their own.
+local usage=''
+
+case $cmd in
+    claude-docker-arm)
+        shape=run
+        summary='run Claude Code in the linux/arm64 sandbox'
+        detail='Runs the base image, native on Apple Silicon. Networking follows the `network` option (default: tailscale).'
+        requires='claude-docker-build-arm'
+        ;;
+    claude-docker-amd64)
+        shape=run
+        summary='run Claude Code in the linux/amd64 sandbox'
+        detail='Runs the base image — native on Intel Macs, QEMU-emulated on Apple Silicon. Networking follows the `network` option (default: tailscale).'
+        requires='claude-docker-build-amd64'
+        ;;
+    claude-docker-arm-playwright)
+        shape=run
+        summary='run Claude Code in the browser-capable linux/arm64 sandbox'
+        detail='Runs the Playwright image, native on Apple Silicon. Separate state root and Tailscale node from the base sandbox. Networking follows the `network` option (default: tailscale).'
+        requires='claude-docker-build-arm-playwright'
+        ;;
+    claude-docker-amd64-playwright)
+        shape=run
+        summary='run Claude Code in the browser-capable linux/amd64 sandbox'
+        detail='Runs the Playwright image — native on Intel Macs, QEMU-emulated on Apple Silicon. Separate state root and Tailscale node from the base sandbox. Networking follows the `network` option (default: tailscale).'
+        requires='claude-docker-build-amd64-playwright'
+        ;;
+    claude-docker-build-arm)
+        shape=build
+        summary='build the linux/arm64 base image'
+        detail='Builds claude-code-full-arm64 natively on Apple Silicon. Bakes in your non-secret Claude Code config; credentials are mounted at run time, never baked.'
+        ;;
+    claude-docker-build-amd64)
+        shape=build
+        summary='build the linux/amd64 base image'
+        detail='Builds claude-code-full-amd64 — native on Intel Macs, a slow QEMU cross-build on Apple Silicon. Bakes in your non-secret Claude Code config; credentials are mounted at run time, never baked.'
+        ;;
+    claude-docker-build-arm-playwright)
+        shape=build
+        summary='build the browser-capable linux/arm64 image'
+        detail='Builds claude-code-full-playwright-arm64 FROM the arm64 base image.'
+        requires='claude-docker-build-arm'
+        ;;
+    claude-docker-build-amd64-playwright)
+        shape=build
+        summary='build the browser-capable linux/amd64 image'
+        detail='Builds claude-code-full-playwright-amd64 FROM the amd64 base image.'
+        requires='claude-docker-build-amd64'
+        ;;
+    claude-docker-doctor)
+        summary='check the setup and print a fix for anything broken'
+        detail='Reports docker, credentials, Tailscale and image state, plus the resolved configuration. Exits non-zero if a required check fails.'
+        ;;
+    claude-docker-status)
+        summary='list every running sandbox across all directories'
+        detail='Shows directory, arch/variant, uptime and whether the Tailscale sidecar is genuinely online.'
+        ;;
+    claude-docker-shell)
+        summary='open an extra shell in this directory'"'"'s running sandbox'
+        usage='Usage: claude-docker-shell [cmd...]'
+        detail='With no arguments runs an interactive bash; any arguments are exec'"'"'d in the container instead. Does not disturb the running tmux session.'
+        ;;
+    claude-docker-configure)
+        summary='first-run setup wizard'
+        detail='Walks through Docker, the Tailscale auth key and the first image build, and writes the answers to ~/.tupperclaude.zsh.'
+        ;;
+    claude-docker-clean)
+        summary='tear down tupperclaude containers, images and volumes'
+        usage='Usage: claude-docker-clean [-y|--yes] [--dry-run] [--force] [--state] [--prune]'
+        detail='Destructive: prints what it will remove and asks for confirmation first. Preserves the Docker-only Claude logins.'
+        ;;
+    *)
+        _claude_docker_err "no help for '$cmd'" "tupperclaude --help"
+        return 1
+        ;;
+esac
+
+print -r -- "$cmd — $summary"
+print ""
+if [[ -n $usage ]]; then
+    print -r -- "$usage"
+else
+case $shape in
+    run)
+        print -r -- "Usage: $cmd [claude args...]"
+        print -r -- "       $cmd -- --help      # pass --help through to claude"
+        ;;
+    build)
+        print -r -- "Usage: $cmd"
+        ;;
+    util)
+        print -r -- "Usage: $cmd [-h|--help]"
+        ;;
+esac
+fi
+print ""
+print -r -- "$detail"
+if [[ -n $requires ]]; then
+    print -r -- "Requires the image to exist: $requires"
+fi
+print ""
+# Never point a command at itself.
+local -a see_also=(claude-docker-doctor claude-docker-status tupperclaude)
+see_also=(${see_also:#$cmd})
+print -r -- "See also: ${(j:, :)see_also}"
+return 0

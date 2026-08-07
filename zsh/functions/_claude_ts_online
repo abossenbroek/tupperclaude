@@ -3,20 +3,37 @@
 #
 # True only when the sidecar has an active session with the coordination server.
 # BackendState=Running alone is not enough — see the caller.
+#
+# Polls once a second. From the third second on, and only when stderr is a
+# terminal, it rewrites a single heartbeat line in place so a 45s wait doesn't
+# look like a hang; the line is erased again before returning, so nothing is
+# left behind and non-interactive callers (tests, scripts) see no output at all.
 
 emulate -L zsh
 setopt local_options
 
 local ts_name="$1" timeout="$2"
-local i json
+local i state
+integer heartbeat=0 rc=1
 
-for (( i = 1; i <= timeout; i++ )); do
-    json="$(command docker exec "$ts_name" tailscale status --json 2>/dev/null)"
-    if [[ -n "$json" ]] \
-        && [[ "$(print -r -- "$json" | command jq -r '.BackendState')" == "Running" ]] \
-        && [[ "$(print -r -- "$json" | command jq -r '.Self.Online')" == "true" ]]; then
-        return 0
-    fi
-    sleep 1
-done
-return 1
+[[ -t 2 ]] && heartbeat=1
+
+{
+    for (( i = 1; i <= timeout; i++ )); do
+        # One jq per poll, not two: this loop runs up to 45 times and each fork
+        # is a process the user waits for.
+        state="$(command docker exec "$ts_name" tailscale status --json 2>/dev/null \
+            | command jq -r '.BackendState + "/" + (.Self.Online | tostring)' 2>/dev/null)"
+        if [[ "$state" == Running/true ]]; then
+            rc=0
+            break
+        fi
+        (( heartbeat && i >= 3 )) && \
+            print -n -u2 -r -- $'\r'"tupperclaude: waiting for the tailnet (${i}s/${timeout}s)… "
+        sleep 1
+    done
+} always {
+    (( heartbeat )) && print -n -u2 -r -- $'\r\e[K'
+}
+
+return $rc

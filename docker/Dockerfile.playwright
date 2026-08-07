@@ -12,9 +12,37 @@
 # reconstruction (Claude on the Playwright base) is preserved in
 # Dockerfile.claude-on-pw for reference.
 #
+# SUPPLY CHAIN — read this before assuming the base image's discipline carries
+# over. It does not, and the difference is deliberate. The base Dockerfile pins
+# every third-party artifact to an exact version and verifies it against a
+# vendor-published sha256. This file cannot do that for the browser, and does
+# less than the base everywhere else:
+#
+#   * `playwright install chromium` downloads a per-arch Chromium build that
+#     Playwright resolves itself at run time from a revision embedded in the
+#     library. There is no stable, vendor-published checksum for those builds to
+#     pin against, and no supported way to hand Playwright a pre-verified binary.
+#     The browser is therefore downloaded and executed on TLS trust in
+#     playwright.azureedge.net alone. This is the weakest link in the image and
+#     the reason this variant is a separate opt-in image rather than the default.
+#   * `npx --yes playwright@$PWVER` fetches and executes whatever the npm
+#     registry serves for that version. $PWVER is an exact version, so the
+#     package is pinned — but no integrity hash of ours is checked, and `--yes`
+#     suppresses the prompt that would otherwise surface an unexpected fetch.
+#   * $PWVER itself is resolved live (`npm view @playwright/mcp@X dependencies.
+#     playwright`) rather than hardcoded. That is a deliberate trade: it keeps the
+#     MCP and the library provably in lockstep from one pinned source instead of
+#     two ARGs that can drift. The lookup is guarded below so an empty result
+#     fails the build instead of installing `playwright@`.
+#
+# What IS pinned: @playwright/mcp to an exact version (one ARG, referenced three
+# times), the resulting playwright library version derived from it, and the base
+# image via BASE_IMAGE. npm installs use --ignore-scripts where the package
+# permits it.
+#
 # BASE_IMAGE must be declared before FROM (ARGs used by FROM are resolved in an
 # outer scope that only sees pre-FROM ARGs) — the default here is only a
-# fallback for a manual build; claude-docker-arm-playwright-build /
+# fallback for a manual build; claude-docker-build-arm-playwright /
 # claude-docker-amd-playwright-build always pass
 # --build-arg BASE_IMAGE=claude-code-full-<arch> explicitly.
 ARG BASE_IMAGE=claude-code-full-arm64
@@ -31,6 +59,12 @@ FROM ${BASE_IMAGE}
 # A probe). PWVER is derived from the pinned MCP so install-deps pulls the right
 # dependency set. No X11/Xvfb/XDG — these are headless-only deps.
 USER root
+
+# Same reason as the base image: without pipefail (and without the explicit
+# non-empty guards below) a failed lookup or download yields an empty value that
+# the next command happily consumes.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
 
 # Playwright validates the host OS against an allowlist before downloading a
@@ -59,8 +93,13 @@ ENV PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
 # variable is set to. Verified by installing chromium with each in turn.
 ARG PLAYWRIGHT_MCP_VERSION=0.0.79
 
+# `npm view` prints nothing and exits 0 when the field is absent, and a command
+# substitution's failure does not abort the RUN — so the result is checked
+# explicitly. Unguarded, a bad lookup would run `npx --yes playwright@`, which
+# resolves to the registry's newest release: an unpinned install, silently.
 RUN mkdir -p /usr/local/ms-playwright && chown agent:agent /usr/local/ms-playwright && \
-    PWVER=$(npm view "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION" dependencies.playwright) && \
+    PWVER="$(npm view "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION" dependencies.playwright)" && \
+    if [ -z "$PWVER" ]; then echo "could not resolve playwright version for @playwright/mcp@$PLAYWRIGHT_MCP_VERSION" >&2; exit 1; fi && \
     npx --yes "playwright@$PWVER" install-deps chromium
 
 # ── Playwright library + MCP + matching browser (as agent, like the base's
@@ -74,8 +113,11 @@ USER agent
 # cannot use --ignore-scripts because `playwright install chromium` has to
 # download a browser binary, not run an npm postinstall — it's fetched
 # explicitly afterward instead.
-ARG PLAYWRIGHT_MCP_VERSION
-RUN PWVER=$(npm view "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION" dependencies.playwright) && \
+#
+# (No `ARG PLAYWRIGHT_MCP_VERSION` redeclare here: ARG scope is per-stage, there
+# is only one stage after FROM, so the value declared above is still live.)
+RUN PWVER="$(npm view "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION" dependencies.playwright)" && \
+    if [ -z "$PWVER" ]; then echo "could not resolve playwright version for @playwright/mcp@$PLAYWRIGHT_MCP_VERSION" >&2; exit 1; fi && \
     npm install -g --ignore-scripts "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION" "playwright@$PWVER" && \
     playwright install chromium
 

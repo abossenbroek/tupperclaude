@@ -20,6 +20,7 @@
 # Sets (typeset -g):
 #   _tc_arch _tc_variant _tc_platform _tc_image _tc_dockerfile _tc_cfg
 #   _tc_instance _tc_state _tc_ts_node _tc_ts_host _tc_name _tc_network
+#   _tc_build_cmd
 #   _tc_run_flags   (array)
 #
 # Returns 1 on an invalid arch or variant. Validation is loud on purpose: a bad
@@ -46,14 +47,23 @@ typeset -g _tc_arch=$arch
 typeset -g _tc_variant=$variant
 typeset -g _tc_platform="linux/$arch"
 
-local root=${TUPPERCLAUDE_DIR:-${0:A:h:h:h}}
-local cfg_default ts_prefix
+# $0 inside an autoloaded function is the function NAME, not a path, so the
+# usual ${0:A:h} idiom would anchor to $PWD and silently produce a Dockerfile
+# path inside whatever directory the user happens to be in. $functions_source
+# holds the file the function was autoloaded from, which is the real answer.
+local root=${TUPPERCLAUDE_DIR:-${${functions_source[_claude_docker_ctx]:-}:A:h:h:h}}
+local ts_prefix
 typeset -ga _tc_run_flags=()
+
+# The command that builds $_tc_image, published so nothing else has to map an
+# image name back to a command (three call sites used to derive this
+# independently). Note the arch spelling differs: arm64 → …-build-arm.
+typeset -g _tc_build_cmd="claude-docker-build-${arch/arm64/arm}"
+[[ $variant == playwright ]] && _tc_build_cmd="${_tc_build_cmd}-playwright"
 
 if [[ $variant == playwright ]]; then
     typeset -g _tc_image="claude-code-full-playwright-$arch"
     typeset -g _tc_dockerfile="$root/docker/Dockerfile.playwright"
-    cfg_default="$HOME/.config/claude-docker-playwright"
     ts_prefix="claude-ts-pw-"
     # Playwright's own recommendation: Chromium crashes on the default 64MB
     # /dev/shm. We do NOT pass --init; the base image already sets
@@ -62,7 +72,6 @@ if [[ $variant == playwright ]]; then
 else
     typeset -g _tc_image="claude-code-full-$arch"
     typeset -g _tc_dockerfile="$root/docker/Dockerfile"
-    cfg_default="$HOME/.config/claude-docker"
     ts_prefix="claude-ts-"
 fi
 

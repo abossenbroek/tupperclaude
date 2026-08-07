@@ -15,8 +15,10 @@
 # Checks:
 #   docker-bin              docker is on $PATH
 #   docker-daemon           the daemon answers
+#   jq                      jq is on $PATH  (a hard runtime dependency)
 #   image <image>           named image exists locally  (detail = age)
 #   claude-json             ~/.claude.json exists and is valid JSON
+#   network                 the configured network mode is one ctx accepts
 #   authkey                 a Tailscale auth key is resolvable
 #   op-signin               1Password CLI is available and unlocked
 #   ssh-agent               Docker Desktop's ssh-agent socket is present
@@ -50,6 +52,19 @@ docker-daemon)
     return 1
     ;;
 
+jq)
+    # Not optional: the sidecar health probe (_claude_ts_online), claude-ts-ensure
+    # and the generated netwatch script all pipe through jq, so a machine without
+    # it fails later, further from the cause.
+    if (( ${+commands[jq]} )); then
+        _tc_check_detail="$(command jq --version 2>/dev/null)"
+        return 0
+    fi
+    _tc_check_detail='not found on $PATH'
+    _tc_check_fix=('brew install jq')
+    return 1
+    ;;
+
 image)
     local created
     if created="$(command docker image inspect -f '{{.Created}}' "$arg" 2>/dev/null)"; then
@@ -58,10 +73,21 @@ image)
     fi
     _tc_check_detail="$arg not built"
     # Map the image name back to the command that builds it.
-    local build_cmd="claude-docker-arm-build"
-    [[ $arg == *amd64* ]] && build_cmd="claude-docker-amd64-build"
-    [[ $arg == *playwright* ]] && build_cmd="${build_cmd%-build}-playwright-build"
-    _tc_check_fix=("$build_cmd")
+    local build_arch=arm
+    [[ $arg == *amd64* ]] && build_arch=amd64
+    local build_cmd="claude-docker-build-$build_arch"
+    if [[ $arg == *playwright* ]]; then
+        # The playwright image is built FROM the same-arch base, so a missing
+        # playwright image usually means the base is missing too. Offer both, in
+        # the order they must be run.
+        local base_img="claude-code-full-$([[ $build_arch == amd64 ]] && print amd64 || print arm64)"
+        _tc_check_fix=()
+        command docker image inspect "$base_img" >/dev/null 2>&1 \
+            || _tc_check_fix+=("claude-docker-build-$build_arch    # the playwright image is built FROM this")
+        _tc_check_fix+=("claude-docker-build-$build_arch-playwright")
+    else
+        _tc_check_fix=("$build_cmd")
+    fi
     return 1
     ;;
 
@@ -69,6 +95,14 @@ claude-json)
     if [[ ! -f $HOME/.claude.json ]]; then
         _tc_check_detail='~/.claude.json not found'
         _tc_check_fix=('claude    # run Claude Code on the host once, then retry')
+        return 1
+    fi
+    # Validity is decided by jq, so without jq we know nothing — say that,
+    # rather than blaming the file. `command jq …` on a machine without jq
+    # exits non-zero for exactly the same reason a malformed file does.
+    if (( ! ${+commands[jq]} )); then
+        _tc_check_detail='cannot validate: jq is not installed'
+        _tc_check_fix=('brew install jq')
         return 1
     fi
     if command jq . "$HOME/.claude.json" >/dev/null 2>&1; then
@@ -80,14 +114,62 @@ claude-json)
     return 1
     ;;
 
+network)
+    # The same values _claude_docker_ctx accepts. Checked separately so a typo
+    # in the zstyle is reported as one failed check with a fix, instead of
+    # aborting whatever was about to run.
+    local mode
+    mode="$(_claude_docker_opt network CLAUDE_DOCKER_NETWORK tailscale)"
+    case $mode in
+        tailscale|default)
+            _tc_check_detail="$mode"
+            return 0
+            ;;
+    esac
+    _tc_check_detail="unknown network mode '$mode' (expected tailscale or default)"
+    _tc_check_fix=("zstyle ':omz:plugins:tupperclaude' network tailscale")
+    return 1
+    ;;
+
 authkey)
     if [[ -n ${TS_AUTHKEY:-} ]]; then
         _tc_check_detail='from $TS_AUTHKEY'
         return 0
     fi
+    # The key is consumed ONLY when a sidecar is first created (see
+    # claude-ts-ensure); an existing one reconnects from its state volume
+    # without it. So find out whether this directory already has one before
+    # calling a missing key a failure — otherwise every established session
+    # reports a problem it does not have.
+    #
+    # Sidecar names belong to _claude_docker_ctx. Ask it in a subshell so the
+    # caller's live _tc_* globals survive, with the network option cleared so a
+    # broken `network` setting can't stop this check from answering. The arch is
+    # irrelevant to a sidecar name — only the variant picks the prefix.
+    local -a nodes
+    nodes=(${(f)"$(
+        zstyle -d ':omz:plugins:tupperclaude' network
+        unset CLAUDE_DOCKER_NETWORK
+        local v
+        for v in base playwright; do
+            _claude_docker_ctx arm64 "$v" >/dev/null 2>&1 && print -r -- "$_tc_ts_node"
+        done
+    )"})
+    local existing='' node
+    for node in "${nodes[@]}"; do
+        if command docker inspect "$node" >/dev/null 2>&1; then
+            existing=$node
+            break
+        fi
+    done
+
     local ref
     ref="$(_claude_docker_opt op-ref CLAUDE_DOCKER_OP_TS_REF '')"
     if [[ -z $ref ]]; then
+        if [[ -n $existing ]]; then
+            _tc_check_detail="no key configured — sidecar '$existing' already exists and still works; a key is needed only to create a new one"
+            return 0
+        fi
         _tc_check_detail='no auth key configured'
         _tc_check_fix=(
             "export TS_AUTHKEY='tskey-auth-...'"
@@ -98,6 +180,10 @@ authkey)
     fi
     if [[ -n "$(command op read "$ref" 2>/dev/null)" ]]; then
         _tc_check_detail="from 1Password ($ref)"
+        return 0
+    fi
+    if [[ -n $existing ]]; then
+        _tc_check_detail="1Password reference $ref did not resolve — sidecar '$existing' already exists and still works; the key is needed only to create a new one (op read '$ref' shows the error)"
         return 0
     fi
     _tc_check_detail="1Password reference $ref did not resolve"

@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# claude-docker-status
+# claude-docker-status [-h|--help]
 #
 # Table of every tupperclaude sandbox running right now, across ALL
 # directories: which directory, which arch/variant, how long it has been up,
@@ -8,46 +8,150 @@
 # Exists because a sidecar can keep its 100.x address and report
 # BackendState=Running while resolving nothing (see _claude_ts_online) — this
 # surfaces that across every session at once, not just the one you're in.
+#
+# A second section lists sidecars with no running sandbox. Those are invisible
+# to the sandbox table (they carry no tupperclaude labels) yet they are exactly
+# what claude-docker-clean removes, so status would otherwise be unable to show
+# you what clean is about to destroy.
 
 emulate -L zsh
 # noksharrays: the field-splitting below assumes 1-based zsh indexing.
 setopt local_options noksharrays
 
+local usage='usage: claude-docker-status [-h|--help]'
+
+case ${1:-} in
+    -h|--help)
+        print -r -l -- \
+            "$usage" \
+            '' \
+            'List every tupperclaude sandbox running right now, in any directory,' \
+            'with its architecture, variant, uptime, and whether its Tailscale' \
+            'sidecar is genuinely online (not merely running).' \
+            '' \
+            'Then list the Tailscale sidecars that have no running sandbox — the' \
+            'containers claude-docker-clean would remove.' \
+            '' \
+            '  -h, --help   show this help' \
+            '' \
+            'See also: claude-docker-doctor (prerequisites),' \
+            '          claude-docker-shell (get into the sandbox for this directory).'
+        return 0
+        ;;
+    '') ;;
+    *)
+        _claude_docker_err "unknown argument '$1'" "$usage"
+        return 1
+        ;;
+esac
+
+# Ask before reporting. Without this, an unreachable daemon printed
+# "no sandboxes are running" and returned 0 — an error reported as a fact.
+if ! _claude_docker_check docker-bin; then
+    _claude_docker_err "docker: $_tc_check_detail" "${_tc_check_fix[@]}"
+    return 1
+fi
+if ! _claude_docker_check docker-daemon; then
+    _claude_docker_err "the Docker daemon is $_tc_check_detail" "${_tc_check_fix[@]}"
+    return 1
+fi
+
+# Sidecar names belong to _claude_docker_ctx, and are asked for rather than
+# rebuilt here: change the prefix or the instance slug there and this keeps
+# working. The subshell keeps ctx's globals out of this function's scope, and
+# clears the `network` option so an invalid one cannot stop status reporting —
+# it has no bearing on a container name.
+local base_prefix pw_prefix
+read -r base_prefix pw_prefix <<<"$(
+    zstyle -d ':omz:plugins:tupperclaude' network
+    unset CLAUDE_DOCKER_NETWORK
+    local v
+    for v in base playwright; do
+        _claude_docker_ctx arm64 "$v" >/dev/null 2>&1 \
+            && print -rn -- "${_tc_ts_node%"$_tc_instance"} "
+    done
+    print -r -- ""
+)"
+
 local fmt='{{.Label "tupperclaude.dir"}}'$'\t''{{.Label "tupperclaude.arch"}}'$'\t''{{.Label "tupperclaude.variant"}}'$'\t''{{.RunningFor}}'
 local ps_out
 ps_out="$(command docker ps --filter label=tupperclaude.arch --format "$fmt")"
 
+# Every sidecar a running sandbox depends on, so the sweep below can tell an
+# idle sidecar from one in active use.
+local -a live_nodes
+
 if [[ -z "$ps_out" ]]; then
-    print -r -- "tupperclaude: no sandboxes are running."
-    return 0
+    _claude_docker_info "no sandboxes are running."
+else
+    local -a rows=("DIRECTORY"$'\t'"ARCH"$'\t'"VARIANT"$'\t'"UPTIME"$'\t'"TAILNET")
+
+    local dir arch variant uptime ts_node tailnet
+    while IFS=$'\t' read -r dir arch variant uptime; do
+        [[ -z "$dir" ]] && continue
+
+        # The sandbox may be running for a directory that is not this one, so
+        # ctx is asked with $PWD set to that directory — again in a subshell,
+        # which is also what makes overriding $PWD safe.
+        ts_node="$(
+            zstyle -d ':omz:plugins:tupperclaude' network
+            unset CLAUDE_DOCKER_NETWORK
+            PWD=$dir
+            _claude_docker_ctx "$arch" "$variant" >/dev/null 2>&1 \
+                && print -r -- "$_tc_ts_node"
+        )"
+
+        if [[ -n "$ts_node" ]] && command docker inspect "$ts_node" >/dev/null 2>&1; then
+            live_nodes+=("$ts_node")
+            if _claude_ts_online "$ts_node" 1; then
+                tailnet="online"
+            else
+                tailnet="OFFLINE"
+            fi
+        else
+            # No sidecar container for this instance means it runs under
+            # network=default — there is nothing to probe.
+            tailnet="n/a"
+        fi
+
+        rows+=("$dir"$'\t'"$arch"$'\t'"$variant"$'\t'"$uptime"$'\t'"$tailnet")
+    done <<<"$ps_out"
+
+    print -r -l -- "${rows[@]}" | command column -t -s $'\t'
 fi
 
-local -a rows=("DIRECTORY"$'\t'"ARCH"$'\t'"VARIANT"$'\t'"UPTIME"$'\t'"TAILNET")
+# --- sidecars with no running sandbox ----------------------------------------
 
-local dir arch variant uptime instance ts_node tailnet
-while IFS=$'\t' read -r dir arch variant uptime; do
-    [[ -z "$dir" ]] && continue
+[[ -z "$base_prefix" ]] && return 0
 
-    instance="${dir//[^A-Za-z0-9]/-}"
-    if [[ "$variant" == playwright ]]; then
-        ts_node="claude-ts-pw-$instance"
+local -a idle
+local name state rest flag
+while IFS=$'\t' read -r name state; do
+    [[ -z "$name" ]] && continue
+    (( ${live_nodes[(Ie)$name]} )) && continue
+
+    # A name this plugin generates is a prefix followed by $PWD with every
+    # non-alphanumeric replaced by '-', and $PWD is absolute — so the slug
+    # always starts with '-'. Anything else was made by something older: the
+    # fish functions used a different scheme, and their sidecars may be
+    # carrying a live session in another shell even though nothing here can
+    # see it. claude-docker-clean removes them all the same.
+    rest=$name
+    if [[ -n "$pw_prefix" && $rest == ${pw_prefix}* ]]; then
+        rest=${rest#$pw_prefix}
     else
-        ts_node="claude-ts-$instance"
+        rest=${rest#$base_prefix}
     fi
+    flag=''
+    [[ $rest == -* ]] || flag='<- legacy fish sidecar, may be in use'
 
-    if command docker inspect "$ts_node" >/dev/null 2>&1; then
-        if _claude_ts_online "$ts_node" 1; then
-            tailnet="online"
-        else
-            tailnet="OFFLINE"
-        fi
-    else
-        # No sidecar container for this instance means it runs under
-        # network=default — there is nothing to probe.
-        tailnet="n/a"
-    fi
+    idle+=("  $name"$'\t'"[$state]"$'\t'"$flag")
+done <<<"$(command docker ps -a --filter "name=^$base_prefix" --format '{{.Names}}'$'\t''{{.Status}}')"
 
-    rows+=("$dir"$'\t'"$arch"$'\t'"$variant"$'\t'"$uptime"$'\t'"$tailnet")
-done <<<"$ps_out"
+if (( ${#idle} )); then
+    print -r -- ""
+    print -r -- "Sidecars with no running sandbox (removable with claude-docker-clean):"
+    print -r -l -- "${idle[@]}" | command column -t -s $'\t'
+fi
 
-print -r -l -- "${rows[@]}" | command column -t -s $'\t'
+return 0

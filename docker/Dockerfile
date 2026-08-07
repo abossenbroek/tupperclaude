@@ -2,21 +2,52 @@
 #
 # Builds for both linux/arm64 and linux/amd64; pass --platform to select.
 #
-# Supply-chain policy, applied uniformly to every third-party component:
+# The base is `docker/sandbox-templates:claude-code`, published by Docker Inc. —
+# it is by far the largest third-party component here (Ubuntu userland, Node,
+# git, the Claude sandbox runtime and a native Claude Code install), and it is
+# the root of trust that every checksummed layer below ultimately rests on. It
+# is pinned to an immutable multi-arch manifest digest, not a floating tag.
+#
+# Supply-chain policy, applied to every third-party component below:
 #   * an exact version is pinned via ARG (never `latest`, never `releases/latest`)
 #   * the artifact is verified against a sha256 published by the vendor before use
 #   * apt repositories are pinned to a vendor keyring (signed-by=)
 #   * npm packages are pinned exactly and installed with --ignore-scripts
-# The two deliberate exceptions are documented at their layers: the uv binaries
-# (COPY --from an immutable image digest, which is a stronger guarantee) and
-# Claude Code itself (tracks the `latest` channel by design).
+#   * every RUN uses `bash -o pipefail`, so a failed download in a pipeline fails
+#     the build instead of feeding an empty file to the next stage
+#
+# There are four deliberate exceptions, each documented again at its own layer:
+#
+#   1. Claude Code (layer 14) is NOT version-pinned and NOT checksum-verified: it
+#      tracks the `latest` channel by design so the image matches a freshly
+#      upgraded host, and it is installed through the vendor's own
+#      `curl https://claude.ai/install.sh | bash` bootstrap — the one such pipe in
+#      this file. Everything else (pulumi, rustup, deno, mise) deliberately uses
+#      the release tarball instead of the vendor's `curl … | sh` script, because
+#      only the tarball has a published checksum to verify against.
+#   2. aws-cli (layer 11, optional) has no vendor-published checksum file — AWS
+#      publishes a GPG signature only. The sha256 in the ARG was computed once
+#      from the pinned artifact by us and is verified on every build.
+#   3. linear-cli (layer 10) is version-pinned but has no checksum of our own:
+#      `deno install jsr:…@X.Y.Z` resolves module integrity against JSR's own
+#      per-version manifest, and there is no single artifact for us to hash.
+#   4. uv (layer 7) is not an ARG+sha256 pin but a `COPY --from` an immutable
+#      image digest. That is stronger, not weaker: the digest covers the whole
+#      multi-arch manifest.
 #
 # Bump ARGs deliberately. To refresh a checksum, take it from the vendor's own
 # published checksum file — see README.md, "Updating pinned versions".
 
-FROM docker/sandbox-templates:claude-code
+# Refresh with: docker buildx imagetools inspect docker/sandbox-templates:claude-code
+# and take the top-level index Digest (it must list BOTH linux/amd64 and linux/arm64).
+FROM docker/sandbox-templates:claude-code@sha256:7fa049b8d7a0cf10f6a4200148ee475e94fc4fb5ef50dfacc4257699cb9a34bc
 
 USER root
+
+# Every RUN below is a pipeline-safe bash: without this, `sh -c` reports only the
+# LAST command's status, so a failed `curl` piped into a writer silently produces
+# an empty file and the build fails many layers later with an unrelated error.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # ── Layer 1: Base apt packages + language runtimes ───────────────────────────
 RUN apt-get update && apt-get install -y \
@@ -34,28 +65,38 @@ ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
 # ── Layer 2: composer (PHP package manager) ──────────────────────────────────
-# Pin the composer binary version and verify the downloaded installer against
-# the official published sha384 signature before running it (never pipe the
-# installer straight into php).
+# The versioned phar is downloaded directly and checked against a sha256 that is
+# hardcoded here, exactly like every other layer. The alternative — running
+# getcomposer.org's installer and checking it against a hash fetched live from
+# the vendor at build time — verifies transport but not identity: the same
+# origin serves the installer and the hash that checks it, so a compromised
+# origin passes trivially. Hardcoding means a tampered artifact fails the build
+# even if the vendor's site is serving a matching hash for it.
 ARG COMPOSER_VERSION=2.10.0
-RUN EXPECTED="$(curl -fsSL https://composer.github.io/installer.sig)" && \
-    curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php && \
-    ACTUAL="$(php -r "echo hash_file('sha384', '/tmp/composer-setup.php');")" && \
-    [ "$EXPECTED" = "$ACTUAL" ] || { echo "composer installer signature mismatch" >&2; exit 1; } && \
-    php /tmp/composer-setup.php --version="$COMPOSER_VERSION" --install-dir=/usr/local/bin --filename=composer && \
-    rm -f /tmp/composer-setup.php
+ARG COMPOSER_SHA256=a346538851988ead111d11e3cbd7d372eeba44abd0af412e09890d3c21ea6c31
+RUN curl -fsSL "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar" -o /tmp/composer.phar && \
+    echo "${COMPOSER_SHA256}  /tmp/composer.phar" | sha256sum -c - && \
+    install -m 0755 /tmp/composer.phar /usr/local/bin/composer && \
+    rm -f /tmp/composer.phar
 
 # ── Layer 3: GitHub CLI ──────────────────────────────────────────────────────
+# The keyring is downloaded to the file directly (no pipe into a writer) and
+# checked non-empty before apt is pointed at it: a zero-byte keyring is accepted
+# silently at install time and only surfaces as an opaque apt signature error.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null && \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    [ -s /usr/share/keyrings/githubcli-archive-keyring.gpg ] && \
     chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
 # ── Layer 4: Google Cloud CLI ────────────────────────────────────────────────
+# Safe to pipe: `set -o pipefail` (SHELL, above) propagates a curl failure, and
+# gpg --dearmor rejects empty input rather than writing an empty keyring.
 RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
       | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
+    [ -s /usr/share/keyrings/cloud.google.gpg ] && \
     echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
       > /etc/apt/sources.list.d/google-cloud-sdk.list && \
     apt-get update && apt-get install -y google-cloud-cli && rm -rf /var/lib/apt/lists/*
@@ -101,7 +142,8 @@ RUN arch="$(dpkg --print-architecture)" && \
 # Copy BOTH uv and uvx: a baked ~/.claude.json may run MCP servers via uvx, so
 # the image must ship it. (The build function rewrites the macOS path
 # /opt/homebrew/bin/uvx → /usr/local/bin/uvx in the baked config.)
-# Pinned by immutable image digest, which is stronger than a sha256 of a file:
+# EXCEPTION 4: not an ARG+sha256 like every other layer, but pinned by immutable
+# image digest — which is stronger than a sha256 of a single file:
 # the digest covers the whole multi-arch manifest, so arm64 and amd64 both
 # resolve from the same pin.
 COPY --from=ghcr.io/astral-sh/uv:0.11.18@sha256:78bc42400d77b0678ba95765305c826652ed5431f399257271dda681d0318f03 /uv /usr/local/bin/uv
@@ -168,8 +210,17 @@ RUN arch="$(dpkg --print-architecture)" && \
 # write the runtime v8 code cache there (read-only would fail with CannotOpen).
 # The release zip is used rather than `curl deno.land/install.sh | sh`, because
 # only the zip has a published .sha256sum to verify against.
+#
+# EXCEPTION 3: linear-cli is pinned to an exact JSR version. There is no artifact for
+# us to checksum — `deno install jsr:…@X.Y.Z` resolves the package against JSR's
+# own per-version integrity manifest — so the version pin is the whole guarantee,
+# which makes an exact pin (rather than a bare `jsr:@schpet/linear-cli`) the only
+# thing standing between this image and whatever the registry serves that minute.
+# Security over newness, as with the npm globals: the pin trails the newest
+# release so a compromised publish has a window to be caught before it lands here.
 ENV DENO_DIR=/usr/local/lib/deno-cache
 ARG DENO_VERSION=v2.8.2
+ARG LINEAR_CLI_VERSION=2.3.0
 ARG DENO_SHA256_ARM64=48647189aee6454ed9b9852fa700a77f92b39465c04c625901d165bc8e937afc
 ARG DENO_SHA256_AMD64=184da7a5267ab649bc08821b3bc3ce6805d8e6985fb82707cb8d5e9fd6535362
 RUN arch="$(dpkg --print-architecture)" && \
@@ -183,7 +234,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     unzip -q /tmp/deno.zip -d /tmp/deno && \
     install -m 0755 /tmp/deno/deno /usr/local/bin/deno && \
     rm -rf /tmp/deno.zip /tmp/deno && \
-    deno install --allow-all --global --name linear 'jsr:@schpet/linear-cli' && \
+    deno install --allow-all --global --name linear "jsr:@schpet/linear-cli@${LINEAR_CLI_VERSION}" && \
     cp -r /root/.deno/bin/.linear /usr/local/lib/linear-deno && \
     chmod -R a+rX /usr/local/lib/linear-deno && \
     chown -R agent:agent /usr/local/lib/deno-cache && \
@@ -192,9 +243,11 @@ RUN arch="$(dpkg --print-architecture)" && \
 
 # ── Layer 11 (optional): AWS CLI v2 ──────────────────────────────────────────
 # Off by default; enable with --build-arg INCLUDE_AWS=1 (the zsh plugin sets this
-# when CLAUDE_DOCKER_INCLUDE_AWS is exported). AWS publishes GPG signatures for
-# these bundles but no checksum file, so the sha256 below was computed once from
-# the pinned artifact and is verified on every build — see README.md.
+# when CLAUDE_DOCKER_INCLUDE_AWS is exported).
+#
+# EXCEPTION 2: AWS publishes GPG signatures for these bundles but no checksum
+# file, so the sha256 below is not vendor-published — it was computed once by us
+# from the pinned artifact, and is verified on every build. See README.md.
 ARG INCLUDE_AWS=0
 ARG AWSCLI_VERSION=2.36.17
 ARG AWSCLI_SHA256_ARM64=a820e168234363fb630da717111b6d94e6cd3712e3552da340e9910420d17cac
@@ -357,10 +410,19 @@ RUN npm install -g bun@1.3.14
 # second copy via `npm install -g` (which `/doctor` flags as a leftover/duplicate
 # install shadowed on PATH by the native one).
 #
-# This is the one component deliberately NOT version-pinned: it tracks the
-# `latest` channel so the image matches a freshly `--upgrade`d host. BUILD_DATE
-# carries a per-build timestamp (set by the build function), so this layer
-# re-runs on every build and always fetches the newest release.
+# EXCEPTION 1 to the supply-chain policy at the top of this file. This is the one
+# component deliberately NOT version-pinned and NOT checksum-verified: it tracks
+# the `latest` channel so the image matches a freshly `--upgrade`d host, and it
+# is installed through the vendor's own `curl … | bash` bootstrap — the only such
+# pipe here. Every other vendor that offers one (pulumi, rustup, deno, mise) is
+# installed from the release tarball instead, precisely because the tarball has a
+# published checksum and the bootstrap script does not. There is no version to
+# pin and no published hash for a moving channel, so the trust here is in TLS to
+# claude.ai plus `set -o pipefail`, which at least makes a failed download fail
+# the build rather than silently no-op (bash on empty stdin exits 0).
+#
+# BUILD_DATE carries a per-build timestamp (set by the build function), so this
+# layer re-runs on every build and always fetches the newest release.
 ARG BUILD_DATE=unknown
 RUN echo "Build date: $BUILD_DATE" && curl -fsSL https://claude.ai/install.sh | bash -s latest
 

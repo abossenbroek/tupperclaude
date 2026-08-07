@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# claude-docker-shell [cmd...]
+# claude-docker-shell [-h|--help] [cmd...]
 #
 # Open an extra shell inside the sandbox already running for the current
 # directory, without disturbing its tmux session. With no arguments this
@@ -9,6 +9,44 @@
 emulate -L zsh
 # noksharrays: the indexing below assumes 1-based zsh indexing.
 setopt local_options noksharrays
+
+local usage='usage: claude-docker-shell [-h|--help] [cmd...]'
+
+# Only a bare -h/--help as the FIRST argument is help: everything after the
+# first argument belongs to the command being run inside the container, and
+# `claude-docker-shell claude --help` must reach claude, not this function.
+case ${1:-} in
+    -h|--help)
+        print -r -l -- \
+            "$usage" \
+            '' \
+            'Open a second shell inside the sandbox already running for the current' \
+            'directory, leaving its tmux session alone. With arguments, run them in' \
+            'the container instead of starting an interactive shell.' \
+            '' \
+            '  -h, --help   show this help' \
+            '' \
+            '  claude-docker-shell                 interactive bash' \
+            "  claude-docker-shell git status      run one command" \
+            '' \
+            'A TTY is allocated only when stdin is one, so this works from a script' \
+            'or a pipeline.' \
+            '' \
+            'See also: claude-docker-status (what is running, where).'
+        return 0
+        ;;
+esac
+
+# Reporting "no sandbox is running" when the daemon is simply unreachable
+# sends the user off to start one, which will fail for a different reason.
+if ! _claude_docker_check docker-bin; then
+    _claude_docker_err "docker: $_tc_check_detail" "${_tc_check_fix[@]}"
+    return 1
+fi
+if ! _claude_docker_check docker-daemon; then
+    _claude_docker_err "the Docker daemon is $_tc_check_detail" "${_tc_check_fix[@]}"
+    return 1
+fi
 
 local -a matches
 matches=(${(f)"$(command docker ps --filter "label=tupperclaude.dir=$PWD" --format '{{.ID}}'$'\t''{{.Names}}')"})

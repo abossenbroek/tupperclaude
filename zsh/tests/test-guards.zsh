@@ -57,8 +57,8 @@ local rc=$?
 check "missing image: _claude_docker_run returns non-zero" $?
 [[ $out == *tupperclaude:\ error:* ]]
 check "missing image: error uses house style prefix" $?
-[[ $out == *claude-docker-arm-build* ]]
-check "missing image: error names the fix (claude-docker-arm-build)" $?
+[[ $out == *claude-docker-build-arm* ]]
+check "missing image: error names the fix (claude-docker-build-arm)" $?
 
 unset FAKE_DOCKER_IMAGES
 

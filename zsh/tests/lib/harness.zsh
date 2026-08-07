@@ -60,6 +60,25 @@ check() {
     fi
 }
 
+# require_fn <name> — ok/not_ok the presence of an autoloadable function
+# before trying to call it, so a not-yet-written target is reported as "not
+# available" rather than as a mysterious downstream failure. Returns non-zero
+# so the caller can skip that section.
+#
+# `${+functions[name]}` is true the moment tupperclaude.zsh registers an
+# autoload STUB for it — regardless of whether zsh/functions/<name> exists on
+# disk yet. Checking $fpath for the real file is what actually distinguishes
+# "written" from "declared but not written".
+require_fn() {
+    local f dir
+    for dir in $fpath; do
+        f="$dir/$1"
+        [[ -r $f ]] && return 0
+    done
+    not_ok "$1 is available to call" "no $1 found anywhere on \$fpath — skipping its assertions"
+    return 1
+}
+
 test_summary() {
     print -r -- "1..$_tc_test_count"
     (( _tc_test_fail == 0 ))
@@ -112,6 +131,140 @@ argv_has_pair() {
         [[ ${reply[i]} == "$2" && ${reply[i + 1]} == "$3" ]] && return 0
     done
     return 1
+}
+
+# --- bind-mount assertions ---------------------------------------------------
+#
+# THE assertion this harness exists for. Asserting that `-v host:container` is
+# present in argv proves only that a string was assembled; it says nothing about
+# whether the host side is real. Docker's behaviour when it is not is the whole
+# problem: a bind mount of a missing host path makes Docker CREATE it — as root,
+# and as a DIRECTORY even where a file was meant. Mounting a root-owned empty
+# directory over /etc/resolv.conf is how DNS died in every playwright+tailscale
+# container while the argv assertion for that exact mount sat green.
+#
+# So: for every -v in a recorded argv, the host side must exist, and where the
+# contract says which kind of thing it is, it must be that kind.
+#
+# Named volumes (a source with no leading '/') are Docker-managed and have no
+# host path to check.
+
+# Container destinations whose host side must be a regular FILE. Anything not
+# listed is only checked for existence — this table is the contract, not a
+# heuristic, because "has a dot in the basename" gets .cargo and .inputrc wrong
+# in opposite directions.
+typeset -gA TC_MOUNT_MUST_BE_FILE=(
+    /etc/resolv.conf                         1
+    /home/agent/.claude/.credentials.json    1
+    /home/agent/.tmux.conf                   1
+    /home/agent/.inputrc                     1
+    /run/tmux-launch.sh                      1
+    /run/netwatch.sh                         1
+)
+
+# Container destinations whose host side must be a DIRECTORY.
+typeset -gA TC_MOUNT_MUST_BE_DIR=(
+    /home/agent/.claude/teams     1
+    /home/agent/.claude/tasks     1
+    /home/agent/.claude/projects  1
+    /home/agent/.cargo            1
+    /run/host-ssh                 1
+    /run/host-gh                  1
+    /run/host-gcloud              1
+    /run/host-linear              1
+    /run/host-pulumi              1
+    /run/host-aws                 1
+)
+
+# Host paths that legitimately do not exist on macOS and must NOT be checked.
+# /run/host-services/ssh-auth.sock lives inside Docker Desktop's Linux VM, which
+# synthesises it for the container; see the long comment on the unconditional
+# mount in _claude_docker_run. Guarding that mount with a [[ -S ]] test is the
+# documented wrong fix, so this test must not demand the file either.
+typeset -ga TC_MOUNT_SYNTHETIC=(
+    /run/host-services/ssh-auth.sock
+)
+
+# mount_specs RECORD — sets $reply to every "host:container[:opts]" that
+# followed a -v. Callers must `local -a reply` first (see argv_tokens).
+mount_specs() {
+    local rec=$1
+    argv_tokens "$rec"
+    local -a toks=("${reply[@]}") specs=()
+    local i
+    for (( i = 1; i < ${#toks}; i++ )); do
+        [[ ${toks[i]} == -v || ${toks[i]} == --volume ]] && specs+=("${toks[i + 1]}")
+    done
+    reply=("${specs[@]}")
+}
+
+# mount_host_path SPEC — the host side of a "host:container[:opts]" spec.
+# Splitting on ':' is not safe here: a host path may legitimately contain one
+# (Docker forbids it, but a test that silently mis-parses is worse than one that
+# reports the truth), so take the LAST two colon-separated fields as
+# container[:opts] and treat everything before as the host path.
+mount_host_path() {
+    local spec=$1
+    local -a f=("${(@s/:/)spec}")
+    if (( ${#f} >= 3 )) && [[ ${f[-1]} == (ro|rw|z|Z|ro,z|rw,z|cached|delegated|consistent) ]]; then
+        print -r -- "${(j/:/)f[1,-3]}"
+    else
+        print -r -- "${(j/:/)f[1,-2]}"
+    fi
+}
+
+mount_container_path() {
+    local spec=$1
+    local -a f=("${(@s/:/)spec}")
+    if (( ${#f} >= 3 )) && [[ ${f[-1]} == (ro|rw|z|Z|ro,z|rw,z|cached|delegated|consistent) ]]; then
+        print -r -- "${f[-2]}"
+    else
+        print -r -- "${f[-1]}"
+    fi
+}
+
+# check_mounts RECORD LABEL — two assertions over one `docker run` record:
+# every bind-mount host path exists, and every one whose kind the contract
+# pins down is of that kind. Offenders are listed in the diagnostics, so a
+# failure names the exact mount rather than just "something is wrong".
+check_mounts() {
+    local rec=$1 label=$2
+    local -a reply
+    mount_specs "$rec"
+    local -a specs=("${reply[@]}")
+    local -a missing=() wrong_type=()
+    local spec host cpath
+
+    for spec in "${specs[@]}"; do
+        host="$(mount_host_path "$spec")"
+        cpath="$(mount_container_path "$spec")"
+
+        # A named volume, not a bind mount — Docker owns it, nothing to stat.
+        [[ $host == /* ]] || continue
+        (( ${TC_MOUNT_SYNTHETIC[(Ie)$host]} )) && continue
+
+        if [[ ! -e $host ]]; then
+            missing+=("$spec")
+            continue
+        fi
+        if [[ -n ${TC_MOUNT_MUST_BE_FILE[$cpath]:-} && ! -f $host ]]; then
+            wrong_type+=("$spec (host side is not a regular file)")
+        elif [[ -n ${TC_MOUNT_MUST_BE_DIR[$cpath]:-} && ! -d $host ]]; then
+            wrong_type+=("$spec (host side is not a directory)")
+        elif [[ $host == "$cpath" && ! -d $host && ! -S $host ]]; then
+            # A same-path mount is a working directory or a repo root — with
+            # one deliberate exception, /var/run/docker.sock, which is a socket
+            # passed through at its own path.
+            wrong_type+=("$spec (same-path mount whose host side is not a directory)")
+        fi
+    done
+
+    (( ${#missing} == 0 ))
+    check "$label: every -v host path exists on the host" $? \
+        "Docker would create these as root-owned empty DIRECTORIES:" "${missing[@]}"
+
+    (( ${#wrong_type} == 0 ))
+    check "$label: every -v host path is of the expected type" $? "${wrong_type[@]}"
 }
 
 records_matching() {

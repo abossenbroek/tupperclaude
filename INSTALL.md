@@ -6,11 +6,11 @@
   `/dev/net/tun` when using `network=tailscale`, and on its ssh-agent forwarding socket
   at `/run/host-services/ssh-auth.sock`)
 - `zsh`
-- `jq`, `git`, `curl`
+- `jq`, `git` (plus `sed`, `awk`, `grep`, `shasum`, `column` — all stock on macOS)
 - Claude Code installed and signed in on the host (the build reads `~/.claude.json`)
-- A Tailscale account and a **reusable, tagged** auth key — only if you use
-  `network=tailscale` (the default is `network=default`, no account needed; see
-  [README.md](README.md#networking))
+- A Tailscale account and a **reusable, tagged** auth key — required unless you opt out
+  with `network default`. Tailscale **is** the default; see
+  [Getting started](README.md#getting-started) for the no-account path.
 
 ## Monorepo layout
 
@@ -42,14 +42,17 @@ zinit sources a specific file rather than resolving a plugin directory conventio
 point it at the root shim:
 
 ```zsh
-zinit ice as"program" pick"tupperclaude.plugin.zsh"
 zinit light abossenbroek/tupperclaude
 ```
+
+zinit's default `as"plugin"` mode already discovers `*.plugin.zsh` at a repo root, which
+this repo has. Do **not** add `as"program"` — that treats the repo as a binary, puts its
+directory on `$PATH` and never sources anything, so no command is defined.
 
 ## antigen
 
 ```zsh
-antigen bundle abossenbroek/tupperclaude tupperclaude.plugin.zsh
+antigen bundle abossenbroek/tupperclaude
 ```
 
 ## zplug
@@ -71,7 +74,7 @@ exec zsh
 ```zsh
 claude-docker-configure   # interactive setup — recommended first step
 claude-docker-doctor      # verify prerequisites
-claude-docker-arm-build   # first build (Apple Silicon; use amd64-build on Intel)
+claude-docker-build-arm   # first build (Apple Silicon; use amd64-build on Intel)
 claude-docker-arm
 ```
 
@@ -100,8 +103,13 @@ See [README.md](README.md) for the full command table and configuration referenc
    rm -rf ~/.config/claude-docker ~/.config/claude-docker-playwright
    ```
 
-3. Verify nothing was missed — this should print nothing:
+3. Verify nothing was missed — **both** of these should print nothing:
 
    ```zsh
-   docker ps -a --filter label=tupperclaude.dir --filter name=claude-ts- --format '{{.Names}}'
+   docker ps -a --filter label=tupperclaude.dir --format '{{.Names}}'   # sandboxes
+   docker ps -a --filter name=claude-ts- --format '{{.Names}}'          # sidecars
    ```
+
+   They must be two separate commands. Docker ANDs filters of different keys, and sidecars
+   carry no `tupperclaude.dir` label — so combining them into one command always prints
+   nothing and would give you a false all-clear.

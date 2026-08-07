@@ -1,0 +1,99 @@
+#!/usr/bin/env zsh
+# tupperclaude [command] [args...]
+#
+# The entry point named after the plugin. `plugins=(tupperclaude)` followed by
+# `tupperclaude<TAB>` has to lead somewhere, and the twelve `claude-docker-*`
+# commands are not discoverable from the plugin's own name.
+#
+# Purely additive: every subcommand forwards to the existing `claude-docker-*`
+# function, which stays the canonical name. Nothing here reimplements behaviour,
+# so there is no second place for the two to drift apart.
+#
+#   tupperclaude                            version + the full command table
+#   tupperclaude build arm|amd64 [--playwright]
+#   tupperclaude run   arm|amd64 [--playwright] [claude args...]
+#   tupperclaude doctor|configure|status|shell|clean [args...]
+
+emulate -L zsh
+setopt local_options
+
+local sub=${1-}
+(( $# )) && shift
+
+case $sub in
+    ''|-h|--help)
+        print -r -- "tupperclaude ${TUPPERCLAUDE_VERSION:-unknown} — run Claude Code in a sandboxed Docker container"
+        print ""
+        print -r -- "Usage: tupperclaude <command> [args...]"
+        print ""
+        print -r -- "build   claude-docker-build-arm                build the linux/arm64 base image"
+        print -r -- "        claude-docker-build-arm-playwright     ... browser-capable (needs the base image)"
+        print -r -- "        claude-docker-build-amd64              build the linux/amd64 base image"
+        print -r -- "        claude-docker-build-amd64-playwright   ... browser-capable (needs the base image)"
+        print ""
+        print -r -- "run     claude-docker-arm                      run Claude Code in the arm64 sandbox"
+        print -r -- "        claude-docker-arm-playwright           ... browser-capable"
+        print -r -- "        claude-docker-amd64                    run Claude Code in the amd64 sandbox"
+        print -r -- "        claude-docker-amd64-playwright         ... browser-capable"
+        print ""
+        print -r -- "manage  claude-docker-doctor                   check the setup, print a fix for anything broken"
+        print -r -- "        claude-docker-status                   list running sandboxes across all directories"
+        print -r -- "        claude-docker-shell                    open an extra shell in this directory's sandbox"
+        print -r -- "        claude-docker-configure                first-run setup wizard"
+        print -r -- "        claude-docker-clean                    tear down containers, images and volumes"
+        print ""
+        print -r -- "Shorthands: tupperclaude build|run arm|amd64 [--playwright]"
+        print -r -- "            tupperclaude doctor|configure|status|shell|clean"
+        print ""
+        print -r -- "Every command takes -h/--help. Start with: tupperclaude doctor"
+        return 0
+        ;;
+
+    -v|--version)
+        print -r -- "tupperclaude ${TUPPERCLAUDE_VERSION:-unknown}"
+        return 0
+        ;;
+
+    build|run)
+        local arch=${1-}
+        (( $# )) && shift
+        # --playwright is a flag on the shorthand, not a claude argument, so it
+        # is consumed here; everything after it is forwarded untouched.
+        local suffix=''
+        if [[ ${1-} == --playwright ]]; then
+            suffix='-playwright'
+            shift
+        fi
+        case $arch in
+            arm|amd64) ;;
+            '')
+                _claude_docker_err "tupperclaude $sub needs an architecture" \
+                    "tupperclaude $sub arm" \
+                    "tupperclaude $sub amd64 --playwright"
+                return 1
+                ;;
+            *)
+                _claude_docker_err "unknown architecture '$arch' (expected arm or amd64)" \
+                    "tupperclaude $sub arm"
+                return 1
+                ;;
+        esac
+        if [[ $sub == build ]]; then
+            "claude-docker-build-$arch$suffix" "$@"
+        else
+            "claude-docker-$arch$suffix" "$@"
+        fi
+        ;;
+
+    doctor|configure|status|shell|clean)
+        "claude-docker-$sub" "$@"
+        ;;
+
+    *)
+        _claude_docker_err "unknown command '$sub'" \
+            "tupperclaude build|run arm|amd64 [--playwright]" \
+            "tupperclaude doctor|configure|status|shell|clean" \
+            "tupperclaude --help"
+        return 1
+        ;;
+esac

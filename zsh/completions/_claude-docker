@@ -1,0 +1,120 @@
+#compdef tupperclaude claude-docker-arm claude-docker-amd64 claude-docker-arm-playwright claude-docker-amd64-playwright claude-docker-build-arm claude-docker-build-amd64 claude-docker-build-arm-playwright claude-docker-build-amd64-playwright claude-docker-doctor claude-docker-status claude-docker-configure claude-docker-shell claude-docker-clean
+# Completion for every tupperclaude command. One file, dispatching on $service,
+# because the commands share a vocabulary (arch, variant, -h) and splitting them
+# would mean keeping fourteen files in step.
+#
+# The build commands are named verb-first — claude-docker-build-arm-playwright,
+# not claude-docker-arm-playwright-build — so plain prefix completion on
+# `claude-docker-build<TAB>` already groups by action. This file completes the
+# arguments; the naming does the grouping.
+#
+# Loaded by prepending zsh/completions to $fpath at plugin-load time. This file
+# never calls compinit — oh-my-zsh (or the user's .zshrc) runs it once, after
+# plugins have had their chance to extend $fpath.
+
+# `--` cannot be written as an _arguments optspec (it is _arguments' own
+# end-of-options marker), so the run wrappers are completed by hand.
+_tupperclaude_run_wrapper() {
+    if (( CURRENT == 2 )); then
+        local -a opts=(
+            '-h:show usage for this wrapper'
+            '--help:show usage for this wrapper'
+            '--:pass every following argument through to claude'
+        )
+        _describe -t options 'option' opts
+    else
+        _default
+    fi
+}
+
+_tupperclaude_build_wrapper() {
+    _arguments -s -S \
+        '(- *)'{-h,--help}'[show usage for this build command]'
+}
+
+_tupperclaude_help_only() {
+    _arguments -s -S \
+        '(- *)'{-h,--help}'[show usage]'
+}
+
+_tupperclaude_clean() {
+    _arguments -s -S \
+        '(- *)'{-h,--help}'[show usage]' \
+        '(-y --yes)'{-y,--yes}'[do not ask for confirmation]' \
+        '--dry-run[print what would be removed, remove nothing]' \
+        '--force[remove resources even while sandboxes are running]' \
+        '--state[also remove the per-directory sandbox state]' \
+        '--prune[prune dangling images afterwards]'
+}
+
+_tupperclaude_shell() {
+    _arguments -s -S \
+        '(- *)'{-h,--help}'[show usage]' \
+        '*::command:_command_names -e'
+}
+
+_tupperclaude_cmd() {
+    local curcontext="$curcontext" state line ret=1
+    typeset -A opt_args
+
+    local -a commands=(
+        'build:build an image'
+        'run:run Claude Code in a sandbox'
+        'doctor:check the setup, print a fix for anything broken'
+        'configure:first-run setup wizard'
+        'status:list running sandboxes across all directories'
+        'shell:open an extra shell in this directory'"'"'s sandbox'
+        'clean:tear down containers, images and volumes'
+    )
+
+    _arguments -s -C \
+        '(- *)'{-h,--help}'[show the command table]' \
+        '(- *)'{-v,--version}'[show the tupperclaude version]' \
+        '1: :->command' \
+        '*:: :->args' && ret=0
+
+    case $state in
+        command)
+            _describe -t commands 'tupperclaude command' commands && ret=0
+            ;;
+        args)
+            case $line[1] in
+                build|run)
+                    _arguments -s \
+                        '1:architecture:((arm\:"linux/arm64 — native on Apple Silicon" amd64\:"linux/amd64 — native on Intel, emulated on Apple Silicon"))' \
+                        '2:variant:((--playwright\:"the browser-capable image"))' \
+                        '*::claude args:_default' && ret=0
+                    ;;
+                clean)     _tupperclaude_clean && ret=0 ;;
+                shell)     _tupperclaude_shell && ret=0 ;;
+                doctor|configure|status) _tupperclaude_help_only && ret=0 ;;
+            esac
+            ;;
+    esac
+
+    return ret
+}
+
+case $service in
+    tupperclaude)
+        _tupperclaude_cmd "$@"
+        ;;
+    claude-docker-arm|claude-docker-amd64|claude-docker-arm-playwright|claude-docker-amd64-playwright)
+        _tupperclaude_run_wrapper "$@"
+        ;;
+    claude-docker-build-*)
+        _tupperclaude_build_wrapper "$@"
+        ;;
+    claude-docker-clean)
+        _tupperclaude_clean "$@"
+        ;;
+    claude-docker-shell)
+        _tupperclaude_shell "$@"
+        ;;
+    claude-docker-doctor|claude-docker-status|claude-docker-configure)
+        _tupperclaude_help_only "$@"
+        ;;
+    *)
+        _default "$@"
+        ;;
+esac

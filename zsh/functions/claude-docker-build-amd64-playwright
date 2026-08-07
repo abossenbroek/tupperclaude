@@ -2,4 +2,6 @@
 # Build the linux/amd64 browser-capable (Playwright) image: native on Intel
 # Macs, QEMU cross-build on Apple Silicon. The base amd64 image must already
 # be built — this variant is FROM'd on top of it.
+
+[[ "${1-}" == (-h|--help) ]] && { _claude_docker_help claude-docker-build-amd64-playwright; return 0 }
 _claude_docker_build amd64 playwright "$@"

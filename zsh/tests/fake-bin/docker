@@ -12,34 +12,63 @@
 # $PWD bind-mount path, survives intact); ASCII RS (\x1e) terminates the
 # record. zsh scalars happily carry embedded NUL bytes read back via
 # `"$(<file)"`, so callers can split on \x1e then \0 with no ambiguity, and no
-# argument is ever expected to contain either byte.
+# argument is ever expected to contain either byte. test-weird-path.zsh proves
+# this end to end with a $PWD containing spaces, brackets and a glob star.
 #
 # Canned behaviour, tuned to what the code under test actually calls, and
-# steered by env vars so tests can simulate different worlds:
+# steered by env vars so tests can simulate different worlds. All of these must
+# be EXPORTED — this is a separate process and sees only the environment.
 #
 #   FAKE_DOCKER_IMAGES     space-separated list of images that "exist" for
-#                          `image inspect`. Unset (not just empty) = ALL images
-#                          exist, so the happy path needs no setup. Set to ""
-#                          (empty string) to make every image missing.
+#                          `image inspect` and `rmi`. Unset (not just empty) =
+#                          ALL images exist, so the happy path needs no setup.
+#                          Set to "" (empty string) to make every image missing.
 #   FAKE_DOCKER_CONTAINERS space-separated list of container names that
-#                          "exist" for bare `inspect <name>`. Default: none —
-#                          so claude-ts-ensure always takes the "create fresh
-#                          sidecar" branch, which is what the run-args tests
-#                          want to observe.
+#                          "exist" for `inspect <name>`. Default: none — so
+#                          claude-ts-ensure takes the "create fresh sidecar"
+#                          branch, which is what the run-args tests observe.
+#   FAKE_DOCKER_RUNNING    space-separated subset of the above that is RUNNING,
+#                          for `inspect -f '{{.State.Running}}'`. Default:
+#                          every existing container is running. Anything in
+#                          CONTAINERS but not in RUNNING reports "false", which
+#                          is what drives claude-ts-ensure's "start it" branch.
+#   FAKE_DOCKER_MOUNTS     value for `inspect -f '{{range .Mounts}}...'`.
+#                          Unset = the container has its state and socket
+#                          volumes ("claude-ts-state-<n> claude-ts-sock-<n>").
+#                          Set to "" = no mounts, which drives the
+#                          socket-volume-recreate branch.
 #   FAKE_DOCKER_TS_ONLINE  1 (default) = `exec <n> tailscale status --json`
 #                          reports BackendState=Running / Self.Online=true
 #                          immediately. 0 = reports Starting/offline (still
 #                          exits 0 — the JSON is valid, just not online yet).
-#   FAKE_DOCKER_PS         raw stdout for `docker ps ...`. Default: empty
-#                          (nothing running).
-#
-# `run`, `build`, `start`, `restart`, `rm`, and anything unrecognised: record
-# argv and exit 0. Read-only subcommands the code under test depends on for
-# control flow (`image inspect`, `inspect`, `info`, `--version`, `volume ls`,
-# `exec ... tailscale status --json`) get the canned responses above.
+#   FAKE_DOCKER_TS_HEALTH  extra Health[] strings (comma-separated) reported
+#                          when offline.
+#   FAKE_DOCKER_PS_DB      the container table `docker ps` filters and formats
+#                          over. Records separated by ';', fields by '|':
+#                              name|id|state|status|runningfor|labels
+#                          where state is `running` or `exited`, and labels is
+#                          a comma-separated list of k=v. Honours --filter
+#                          name=/label=/id=, -a/--all, -q/--quiet and --format
+#                          with {{.Names}} {{.ID}} {{.Status}} {{.RunningFor}}
+#                          and {{.Label "k"}}.
+#   FAKE_DOCKER_PS         raw stdout for `docker ps`, bypassing the DB and all
+#                          filtering. Kept because several tests only need "one
+#                          fixed line" or "nothing running". Wins over
+#                          FAKE_DOCKER_PS_DB when set to a non-empty value.
+#   FAKE_DOCKER_VOLUMES    space-separated volume names for `volume ls`, which
+#                          honours -q and repeated --filter name=<re> (OR'd,
+#                          as real docker does).
+#   FAKE_DOCKER_FAIL       space-separated list of SUBCOMMANDS that must fail,
+#                          e.g. FAKE_DOCKER_FAIL="build" or "run rm". This is
+#                          what makes the code's "docker failed" branches
+#                          reachable at all; without it every one of them was
+#                          dead code to this suite. The first word of argv is
+#                          matched, plus the two-word forms "image inspect",
+#                          "image prune", "volume ls", "volume rm".
+#   FAKE_DOCKER_FAIL_STATUS  exit status used for a simulated failure (default 1).
 
 emulate -L zsh
-setopt local_options
+setopt local_options noksharrays
 
 if [[ -z ${FAKE_DOCKER_LOG:-} ]]; then
     print -u2 "fake docker: \$FAKE_DOCKER_LOG is not set"
@@ -55,19 +84,57 @@ fi
     printf '\x1e'
 } >>| "$FAKE_DOCKER_LOG"
 
+# fail_if_requested <subcommand>... — exit non-zero if ANY of the given names
+# appears in $FAKE_DOCKER_FAIL. Called with both the one-word and two-word
+# spelling so a test can fail "image inspect" without failing `image prune`.
+fail_if_requested() {
+    local -a fails=(${=FAKE_DOCKER_FAIL:-})
+    (( ${#fails} )) || return 0
+    local want
+    for want in "$@"; do
+        if (( ${fails[(Ie)$want]} )); then
+            print -u2 -r -- "fake docker: simulated failure for '$want'"
+            exit ${FAKE_DOCKER_FAIL_STATUS:-1}
+        fi
+    done
+    return 0
+}
+
+container_exists() {
+    local -a existing=(${=FAKE_DOCKER_CONTAINERS:-})
+    (( ${existing[(Ie)$1]} ))
+}
+
+container_running() {
+    container_exists "$1" || return 1
+    # Unset RUNNING means "everything that exists is running"; that keeps the
+    # common case free of setup while leaving "exists but stopped" expressible.
+    (( ${+FAKE_DOCKER_RUNNING} )) || return 0
+    local -a running=(${=FAKE_DOCKER_RUNNING})
+    (( ${running[(Ie)$1]} ))
+}
+
 case $1 in
 
 --version)
+    fail_if_requested --version version
     print -r -- 'Docker version 24.0.0-fake, build fake0000'
     exit 0
     ;;
 
 info)
+    fail_if_requested info
+    # `docker info --format '{{.OperatingSystem}}'` gates the ssh-agent check.
+    local ai
+    for ai in "$@"; do
+        [[ $ai == *OperatingSystem* ]] && { print -r -- "${FAKE_DOCKER_ENGINE:-Docker Desktop}"; exit 0 }
+    done
     exit 0
     ;;
 
 image)
     if [[ $2 == inspect ]]; then
+        fail_if_requested 'image inspect'
         local img=$argv[-1]
         local -a existing
         if (( ${+FAKE_DOCKER_IMAGES} )); then
@@ -84,39 +151,272 @@ image)
         print -u2 -r -- "Error: No such image: $img"
         exit 1
     fi
+    fail_if_requested 'image prune' 'image'
     # `image prune` and anything else under `image`: succeed quietly.
     exit 0
     ;;
 
+images)
+    fail_if_requested images
+    # `docker images --format '{{.Repository}}|{{.Tag}}|{{.Size}}'` — the table
+    # claude-docker-clean prices its plan from. $FAKE_DOCKER_IMAGE_TABLE holds
+    # ready-made "repo|tag|size" lines separated by ';'; unset means every image
+    # in FAKE_DOCKER_IMAGES is present at :latest with an unremarkable size.
+    if (( ${+FAKE_DOCKER_IMAGE_TABLE} )); then
+        local tl
+        for tl in "${(@s:;:)FAKE_DOCKER_IMAGE_TABLE}"; do
+            [[ -n $tl ]] && print -r -- "$tl"
+        done
+    elif (( ${+FAKE_DOCKER_IMAGES} )); then
+        local ti
+        for ti in ${=FAKE_DOCKER_IMAGES}; do
+            print -r -- "$ti|latest|1.5GB"
+        done
+    fi
+    exit 0
+    ;;
+
+rmi)
+    fail_if_requested rmi
+    # Honour the image inventory so clean's "not present, skipping" branch is
+    # reachable: rmi of an image that does not exist is an error in real docker.
+    local rmi_img=$argv[-1]
+    if (( ${+FAKE_DOCKER_IMAGES} )); then
+        local -a existing=(${=FAKE_DOCKER_IMAGES})
+        if (( ! ${existing[(Ie)$rmi_img]} )); then
+            print -u2 -r -- "Error: No such image: $rmi_img"
+            exit 1
+        fi
+    fi
+    print -r -- "Untagged: $rmi_img"
+    exit 0
+    ;;
+
 volume)
+    if [[ $2 == ls ]]; then
+        fail_if_requested 'volume ls'
+        local -a vols=(${=FAKE_DOCKER_VOLUMES:-})
+        local -a name_res=()
+        local vi=2 v re keep fv
+        while (( vi < $# )); do
+            (( vi++ ))
+            case ${argv[vi]} in
+                --filter|-f)
+                    (( vi++ ))
+                    [[ ${argv[vi]} == name=* ]] && name_res+=("${argv[vi]#name=}")
+                    ;;
+                --filter=*)
+                    fv=${argv[vi]#--filter=}
+                    [[ $fv == name=* ]] && name_res+=("${fv#name=}")
+                    ;;
+            esac
+        done
+        for v in $vols; do
+            if (( ${#name_res} )); then
+                # Repeated `name` filters are OR'd, matching real docker.
+                keep=0
+                for re in $name_res; do
+                    [[ $v =~ $re ]] && { keep=1; break }
+                done
+                (( keep )) || continue
+            fi
+            print -r -- "$v"
+        done
+        exit 0
+    fi
+    fail_if_requested 'volume rm' 'volume'
     exit 0
     ;;
 
 ps)
-    [[ -n ${FAKE_DOCKER_PS:-} ]] && print -r -- "$FAKE_DOCKER_PS"
+    fail_if_requested ps
+    # Raw override wins: several tests only need "nothing running" or one
+    # fixed line, and should not have to populate the table.
+    if [[ -n ${FAKE_DOCKER_PS:-} ]]; then
+        print -r -- "$FAKE_DOCKER_PS"
+        exit 0
+    fi
+
+    local ps_fmt='' ps_quiet=0 ps_all=0 pf=''
+    local -a f_names=() f_labels=() f_ids=()
+    local pi=1
+    while (( pi < $# )); do
+        (( pi++ ))
+        case ${argv[pi]} in
+            -q|--quiet) ps_quiet=1 ;;
+            -a|--all)   ps_all=1 ;;
+            -aq|-qa)    ps_quiet=1; ps_all=1 ;;
+            --format)   (( pi++ )); ps_fmt=${argv[pi]} ;;
+            --format=*) ps_fmt=${argv[pi]#--format=} ;;
+            --filter|-f)
+                (( pi++ ))
+                case ${argv[pi]} in
+                    name=*)  f_names+=("${argv[pi]#name=}") ;;
+                    label=*) f_labels+=("${argv[pi]#label=}") ;;
+                    id=*)    f_ids+=("${argv[pi]#id=}") ;;
+                esac
+                ;;
+            --filter=*)
+                pf=${argv[pi]#--filter=}
+                case $pf in
+                    name=*)  f_names+=("${pf#name=}") ;;
+                    label=*) f_labels+=("${pf#label=}") ;;
+                    id=*)    f_ids+=("${pf#id=}") ;;
+                esac
+                ;;
+        esac
+    done
+
+    local -a rows=("${(@s:;:)${FAKE_DOCKER_PS_DB:-}}")
+    # Declared once, outside the loop, and only ever ASSIGNED inside it: a
+    # bare `local x` re-declared on a later iteration while it still holds a
+    # value makes zsh echo "x=<value>" to stdout — which would land in the
+    # middle of this shim's `docker ps` output and corrupt every test parsing
+    # it. `row_status` rather than `status`, which is zsh's read-only alias
+    # for $? and echoes on any re-declaration at all.
+    local row name id state row_status runfor labels
+    local -a fields lab_pairs
+    local want re out keep found lp lp2 pre rest key post val
+    for row in $rows; do
+        [[ -z $row ]] && continue
+        fields=("${(@s:|:)row}")
+        name=${fields[1]:-}
+        id=${fields[2]:-}
+        state=${fields[3]:-running}
+        row_status=${fields[4]:-}
+        runfor=${fields[5]:-}
+        labels=${fields[6]:-}
+        lab_pairs=("${(@s:,:)labels}")
+
+        (( ps_all )) || [[ $state == running ]] || continue
+
+        # name filters: real docker treats the value as a regex, and repeated
+        # values of the same filter key are OR'd.
+        if (( ${#f_names} )); then
+            keep=0
+            for re in $f_names; do
+                [[ $name =~ $re ]] && { keep=1; break }
+            done
+            (( keep )) || continue
+        fi
+        if (( ${#f_ids} )); then
+            keep=0
+            for re in $f_ids; do
+                [[ $id == $re* ]] && { keep=1; break }
+            done
+            (( keep )) || continue
+        fi
+        # label filters are AND'd across keys; `label=k` means "has key k",
+        # `label=k=v` means "key k equals v".
+        if (( ${#f_labels} )); then
+            keep=1
+            for want in $f_labels; do
+                if [[ $want == *=* ]]; then
+                    (( ${lab_pairs[(Ie)$want]} )) || { keep=0; break }
+                else
+                    found=0
+                    for lp in $lab_pairs; do
+                        [[ ${lp%%=*} == $want ]] && { found=1; break }
+                    done
+                    (( found )) || { keep=0; break }
+                fi
+            done
+            (( keep )) || continue
+        fi
+
+        if (( ps_quiet )); then
+            print -r -- "$id"
+            continue
+        fi
+        if [[ -z $ps_fmt ]]; then
+            print -r -- "$id  $name  $row_status"
+            continue
+        fi
+        out=$ps_fmt
+        out=${out//\{\{.Names\}\}/$name}
+        out=${out//\{\{.ID\}\}/$id}
+        out=${out//\{\{.Status\}\}/$row_status}
+        out=${out//\{\{.RunningFor\}\}/$runfor}
+        # {{.Label "k"}} — resolve each occurrence against this row's labels.
+        while [[ $out == *'{{.Label "'*'"}}'* ]]; do
+            pre=${out%%'{{.Label "'*}
+            rest=${out#*'{{.Label "'}
+            key=${rest%%'"}}'*}
+            post=${rest#*'"}}'}
+            val=''
+            for lp2 in $lab_pairs; do
+                [[ ${lp2%%=*} == $key ]] && { val=${lp2#*=}; break }
+            done
+            out="$pre$val$post"
+        done
+        print -r -- "$out"
+    done
     exit 0
     ;;
 
 inspect)
-    local name=$argv[-1]
-    local -a existing=(${=FAKE_DOCKER_CONTAINERS:-})
-    (( ${existing[(Ie)$name]} )) && exit 0
-    print -u2 -r -- "Error: No such object: $name"
-    exit 1
-    ;;
+    fail_if_requested inspect
+    local ins_fmt='' ins_name=''
+    local ii=1
+    while (( ii < $# )); do
+        (( ii++ ))
+        case ${argv[ii]} in
+            -f|--format) (( ii++ )); ins_fmt=${argv[ii]} ;;
+            --format=*)  ins_fmt=${argv[ii]#--format=} ;;
+            -*)          ;;
+            *)           ins_name=${argv[ii]} ;;
+        esac
+    done
 
-exec)
-    if (( $# >= 3 )) && [[ "$*" == *'tailscale status --json'* ]]; then
-        if [[ ${FAKE_DOCKER_TS_ONLINE:-1} == 1 ]]; then
-            print -r -- '{"BackendState":"Running","Self":{"Online":true},"Health":[]}'
+    if ! container_exists "$ins_name"; then
+        print -u2 -r -- "Error: No such object: $ins_name"
+        exit 1
+    fi
+
+    if [[ -n $ins_fmt ]]; then
+        if [[ $ins_fmt == *'{{range .Mounts}}'* ]]; then
+            local mounts
+            if (( ${+FAKE_DOCKER_MOUNTS} )); then
+                mounts=$FAKE_DOCKER_MOUNTS
+            else
+                mounts="claude-ts-state-$ins_name claude-ts-sock-$ins_name"
+            fi
+            # The real template appends a trailing space per element; callers
+            # only ever `grep -q` this, but match the shape anyway.
+            print -r -- "${mounts:+$mounts }"
+        elif [[ $ins_fmt == *'{{.State.Running}}'* ]]; then
+            local is_running=false
+            container_running "$ins_name" && is_running=true
+            print -r -- "${ins_fmt//\{\{.State.Running\}\}/$is_running}"
         else
-            print -r -- '{"BackendState":"Starting","Self":{"Online":false},"Health":["not connected"]}'
+            print -r -- ''
         fi
     fi
     exit 0
     ;;
 
-run|build|start|restart|rm|*)
+exec)
+    fail_if_requested exec
+    if (( $# >= 3 )) && [[ "$*" == *'tailscale status --json'* ]]; then
+        if [[ ${FAKE_DOCKER_TS_ONLINE:-1} == 1 ]]; then
+            print -r -- '{"BackendState":"Running","Self":{"Online":true},"Health":[]}'
+        else
+            local -a hl=("${(@s:,:)${FAKE_DOCKER_TS_HEALTH:-not connected}}")
+            local hj="${(j:,:)${(@)hl/#/\"}}"
+            # Re-quote each health string as JSON.
+            hj=''
+            local h
+            for h in $hl; do
+                hj+="${hj:+,}\"$h\""
+            done
+            print -r -- '{"BackendState":"Starting","Self":{"Online":false},"Health":['"$hj"']}'
+        fi
+    fi
+    exit 0
+    ;;
+
+run|build|start|restart|stop|rm|logs|*)
+    fail_if_requested "$1"
     exit 0
     ;;
 

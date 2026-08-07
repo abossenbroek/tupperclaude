@@ -1,3 +1,5 @@
 #!/usr/bin/env zsh
 # Build the native linux/arm64 base image (Apple Silicon — no Rosetta).
+
+[[ "${1-}" == (-h|--help) ]] && { _claude_docker_help claude-docker-build-arm; return 0 }
 _claude_docker_build arm64 base "$@"

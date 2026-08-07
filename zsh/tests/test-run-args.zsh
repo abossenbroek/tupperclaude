@@ -88,13 +88,23 @@ for arch in arm64 amd64; do
             check "$arch/$variant: tailscale resolv.conf mount" $?
             argv_has_pair "$rec" -v "claude-ts-sock-$_tc_ts_node:/var/run/tailscale"
             check "$arch/$variant: tailscale socket volume mount" $?
+
+            # The assertions above prove only that the right STRINGS were
+            # assembled. This one goes to the filesystem: every bind mount's
+            # host side must actually exist and be the right kind of thing, or
+            # Docker silently creates a root-owned empty directory there. The
+            # resolv.conf mount asserted immediately above passed green for a
+            # long time while the file it names did not exist for the
+            # playwright variant, which killed DNS in every playwright +
+            # tailscale container. See check_mounts in lib/harness.zsh.
+            check_mounts "$rec" "$arch/$variant"
         else
             not_ok "$arch/$variant: skipping argv assertions, no run record found"
         fi
 
         # The generated tmux launcher has three windows under tailscale:
         # claude, adc, net.
-        local launcher="$_tc_cfg/tmux-launch.sh"
+        local launcher="$_tc_state/tmux-launch.sh"
         [[ -r $launcher ]]
         check "$arch/$variant: tmux launcher was generated" $?
         if [[ -r $launcher ]]; then
@@ -140,14 +150,16 @@ if (( ${#reply} == 1 )); then
     (( $? != 0 ))
     check "default network: no tailscale socket-volume mount" $?
 
-    argv_has "$rec" "$_tc_cfg/netwatch.sh:/run/netwatch.sh:ro"
+    argv_has "$rec" "$_tc_state/netwatch.sh:/run/netwatch.sh:ro"
     (( $? != 0 ))
     check "default network: no netwatch mount" $?
+
+    check_mounts "$rec" "default network"
 else
     not_ok "default network: skipping negative argv assertions, no run record found"
 fi
 
-local launcher="$_tc_cfg/tmux-launch.sh"
+local launcher="$_tc_state/tmux-launch.sh"
 [[ -r $launcher ]]
 check "default network: tmux launcher was generated" $?
 if [[ -r $launcher ]]; then

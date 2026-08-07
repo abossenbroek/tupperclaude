@@ -1,4 +1,9 @@
 #!/usr/bin/env zsh
 # Run Claude Code in the native linux/arm64 browser-capable (Playwright) container.
 # The base arm64 image must already be built. Extra args pass through to claude.
+#
+# --help is the WRAPPER's: `claude-docker-arm-playwright -- --help` passes --help to claude.
+
+[[ "${1-}" == (-h|--help) ]] && { _claude_docker_help claude-docker-arm-playwright; return 0 }
+[[ "${1-}" == -- ]] && shift
 _claude_docker_run arm64 playwright "$@"

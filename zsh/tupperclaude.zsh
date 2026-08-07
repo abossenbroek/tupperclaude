@@ -15,17 +15,22 @@ typeset -g TUPPERCLAUDE_DIR=${0:A:h:h}
 typeset -g TUPPERCLAUDE_VERSION=unknown
 [[ -r $TUPPERCLAUDE_DIR/.version ]] && TUPPERCLAUDE_VERSION="$(<$TUPPERCLAUDE_DIR/.version)"
 
-fpath=("$TUPPERCLAUDE_ZSH_DIR/functions" $fpath)
+fpath=("$TUPPERCLAUDE_ZSH_DIR/functions" "$TUPPERCLAUDE_ZSH_DIR/completions" $fpath)
+
+# No compinit here on purpose: oh-my-zsh (or the user's own .zshrc) runs it
+# once, after plugins have loaded, and calling it a second time is slow and
+# clobbers the first run's cache. Prepending to $fpath is all a plugin owes it.
 
 autoload -Uz \
+    tupperclaude \
     claude-docker-arm \
-    claude-docker-arm-build \
+    claude-docker-build-arm \
     claude-docker-arm-playwright \
-    claude-docker-arm-playwright-build \
+    claude-docker-build-arm-playwright \
     claude-docker-amd64 \
-    claude-docker-amd64-build \
+    claude-docker-build-amd64 \
     claude-docker-amd64-playwright \
-    claude-docker-amd64-playwright-build \
+    claude-docker-build-amd64-playwright \
     claude-docker-doctor \
     claude-docker-configure \
     claude-docker-clean \
@@ -38,6 +43,8 @@ autoload -Uz \
     _claude_docker_ctx \
     _claude_docker_check \
     _claude_docker_err \
+    _claude_docker_help \
     _claude_docker_warn \
+    _claude_docker_info \
     _claude_docker_sed_i \
     _claude_ts_online

@@ -1,99 +1,435 @@
 #!/usr/bin/env zsh
-# claude-docker-clean [-y|--yes]
+# claude-docker-clean [-n|--dry-run] [-y|--yes] [--force] [--state] [--prune] [-h|--help]
 #
-# Tear down every tupperclaude-managed Docker resource: stop running
-# sandboxes, remove all four base/playwright image tags, remove the
-# Tailscale sidecars and both their state and socket volumes, then prune
-# dangling images. Destructive — prints exactly what it will do first, and
-# asks for confirmation unless -y/--yes is given.
+# Tear down tupperclaude-managed Docker resources: stop labelled sandboxes,
+# remove the Tailscale sidecars and their state/socket volumes, and remove
+# whichever of the four image tags actually exist. Destructive, and expensive
+# to undo — a removed image is a ~15 minute rebuild each — so everything is
+# enumerated and priced first, and nothing happens without confirmation.
 #
-# Preserves ~/.config/claude-docker/.credentials.json and
-# ~/.config/claude-docker-playwright/.credentials.json (the Docker-only
-# Claude logins), so rebuilding the image doesn't force a re-login.
+# The preview is the point of this command. It must never overstate what is
+# safe: the `claude-ts-` sidecars include the legacy `claude-ts-q-*` nodes
+# created by the older fish functions, which are frequently UP and carrying
+# live sessions. Those sessions run inside the sidecar's network namespace,
+# so removing an UP sidecar kills the session using it even though the session
+# container itself carries no `tupperclaude.arch` label and is therefore
+# invisible to the sandbox filter. That case gets a loud warning, blocks
+# `--yes` unless `--force` is also given, and upgrades the prompt from a single
+# keypress to typing `yes`.
+#
+# Not removed unless explicitly asked for:
+#   --state   per-directory state under <state root>/instances (teams, tasks,
+#             projects). It accumulates forever and nothing else removes it,
+#             but it is also the only place a sandbox's own history lives.
+#   --prune   `docker image prune -f`, which deletes EVERY dangling image on
+#             the host — other projects' builds included, not just ours.
+#
+# Always preserved: ~/.config/claude-docker/.credentials.json and
+# ~/.config/claude-docker-playwright/.credentials.json (the Docker-only Claude
+# logins), so rebuilding doesn't force a re-login.
 
 emulate -L zsh
-# noksharrays: the counts and indexing below assume 1-based zsh indexing.
-setopt local_options noksharrays
+# noksharrays:  the counts and indexing below assume 1-based zsh indexing.
+# nonomatch:    the instances/*(N/) globs must not error when nothing matches.
+# extendedglob: (#b) backreferences parse `docker images` sizes into bytes.
+setopt local_options noksharrays nonomatch extendedglob
 
-local yes=0 arg
+local yes=0 dry=0 force=0 do_state=0 do_prune=0 arg
+# Declared once, up here: a bare `local i` redeclared later in the same scope
+# while it still holds a value makes zsh echo "i=<value>" to stdout.
+integer i
+
+# --help is handled before anything else touches Docker: a user reaching for
+# it may well have no daemon running, and the one command that explains what
+# this thing destroys must never itself fail or hang.
 for arg in "$@"; do
     case $arg in
-        -y|--yes) yes=1 ;;
-        *) _claude_docker_err "unknown argument '$arg'" "usage: claude-docker-clean [-y|--yes]"; return 1 ;;
+        -h|--help)
+            print -r -l -- \
+                'claude-docker-clean [options] — remove tupperclaude Docker resources' \
+                '' \
+                '  -n, --dry-run  print exactly what would be removed, then exit' \
+                '  -y, --yes      skip the confirmation prompt. Refuses while a sidecar' \
+                '                 is running unless --force is given too.' \
+                '      --force    permit -y/--yes even with a sidecar running' \
+                '      --state    also remove per-directory state (teams, tasks, projects)' \
+                '      --prune    also run `docker image prune -f`, which removes EVERY' \
+                '                 dangling image on this host, not just tupperclaude'"'"'s' \
+                '  -h, --help     this message' \
+                '' \
+                'Removes by default: running labelled sandboxes (stopped), the claude-ts-*' \
+                'sidecar containers, their state and socket volumes, and whichever of the' \
+                'four image tags exist locally.' \
+                '' \
+                'Never removes: the Docker-only Claude credentials under' \
+                '~/.config/claude-docker*/.credentials.json.'
+            return 0
+            ;;
+        -n|--dry-run) dry=1 ;;
+        -y|--yes)     yes=1 ;;
+        --force)      force=1 ;;
+        --state)      do_state=1 ;;
+        --prune)      do_prune=1 ;;
+        *)
+            _claude_docker_err "unknown argument '$arg'" \
+                'usage: claude-docker-clean [-n|--dry-run] [-y|--yes] [--force] [--state] [--prune]' \
+                'claude-docker-clean --help'
+            return 1
+            ;;
     esac
 done
 
-local -a images=(
-    claude-code-full-arm64
-    claude-code-full-amd64
-    claude-code-full-playwright-arm64
-    claude-code-full-playwright-amd64
-)
+# Without a daemon every enumeration below returns empty, and an empty
+# enumeration reads exactly like "there is nothing to clean". Fail loudly
+# instead of reporting a reassuring, wrong, zero.
+local what
+for what in docker-bin docker-daemon; do
+    if ! _claude_docker_check "$what"; then
+        _claude_docker_err "cannot enumerate what to remove: docker $_tc_check_detail" \
+            "${_tc_check_fix[@]}"
+        return 1
+    fi
+done
 
-local -a sandboxes sidecars volumes
+# ---- what exists ----------------------------------------------------------
+
+# Image tags and state roots come from _claude_docker_ctx, never from a
+# hand-written list: it is the single source of truth for the variant matrix,
+# and a hardcoded copy here would silently rot the day a variant is added.
+local -a images=() state_roots=()
+local a v
+for a in arm64 amd64; do
+    for v in base playwright; do
+        _claude_docker_ctx "$a" "$v" || return 1
+        (( ${images[(Ie)$_tc_image]} ))     || images+=("$_tc_image")
+        (( ${state_roots[(Ie)$_tc_cfg]} ))  || state_roots+=("$_tc_cfg")
+    done
+done
+
+# Sizes, and the other tags of the same repositories. `docker rmi <name>` only
+# ever touches :latest, so a `pre-zsh-port` style backup tag survives and has
+# to be reported as preserved rather than left for the user to discover.
+local -a img_lines=()
+img_lines=(${(f)"$(command docker images --format '{{.Repository}}|{{.Tag}}|{{.Size}}' 2>/dev/null)"})
+
+local -a present=() present_size=() absent=() other_tags=()
+local -F total_bytes=0
+local line repo tag size img
+for img in "${images[@]}"; do
+    # Presence comes from the house predicate, not from parsing the table
+    # above: it is the same `docker image inspect` that claude-docker-doctor
+    # and the run path use, so "exists" means one thing everywhere.
+    if ! _claude_docker_check image "$img"; then
+        absent+=("$img")
+        continue
+    fi
+    size=''
+    for line in "${img_lines[@]}"; do
+        repo=${line%%|*}
+        [[ $repo == "$img" ]] || continue
+        tag=${${line#*|}%%|*}
+        if [[ $tag == latest ]]; then
+            size=${line##*|}
+        else
+            other_tags+=("$repo:$tag  (${line##*|})")
+        fi
+    done
+    present+=("$img")
+    present_size+=("${size:-size unknown}")
+    # docker prints decimal-unit sizes ("9.34GB", "61MB", "0B"). Parse those
+    # rather than shell out again: `docker image inspect .Size` disagrees with
+    # `docker images` under the containerd image store, and the number the user
+    # will compare this against is the one `docker images` shows.
+    if [[ -n $size && $size == (#b)([0-9.]##)([A-Za-z]#) ]]; then
+        local -F mult=1
+        case ${(L)match[2]} in
+            b|'') mult=1 ;;
+            kb)   mult=1000 ;;
+            mb)   mult=1000000 ;;
+            gb)   mult=1000000000 ;;
+            tb)   mult=1000000000000 ;;
+        esac
+        (( total_bytes += match[1] * mult ))
+    fi
+done
+
+local total_h
+if (( total_bytes >= 1000000000 )); then
+    printf -v total_h '%.1f GB' $(( total_bytes / 1000000000.0 ))
+elif (( total_bytes >= 1000000 )); then
+    printf -v total_h '%.0f MB' $(( total_bytes / 1000000.0 ))
+else
+    printf -v total_h '%.0f bytes' $total_bytes
+fi
+
+local -a sandboxes=()
 sandboxes=(${(f)"$(command docker ps -q --filter label=tupperclaude.arch)"})
-sidecars=(${(f)"$(command docker ps -aq --filter 'name=^claude-ts-')"})
-volumes=(${(f)"$(command docker volume ls -q --filter 'name=^claude-ts-state-' --filter 'name=^claude-ts-sock-')"})
+sandboxes=(${sandboxes:#})
 
-print -r -- "tupperclaude: this will:"
-print -r -- "  stop ${#sandboxes} running sandbox container(s)"
-print -r -- "  remove image tags: ${(j:, :)images}"
-print -r -- "  remove ${#sidecars} Tailscale sidecar container(s)"
-# Name them. The `claude-ts-` filter also matches the legacy `claude-ts-q-`
-# sidecars created by the older fish functions, which may be in active use by a
-# session running in another shell — so show exactly what is about to go rather
-# than only a count.
-command docker ps -a --filter 'name=^claude-ts-' --format '{{.Names}}  [{{.Status}}]' \
-    | command sed 's/^/    /'
-print -r -- "  remove ${#volumes} sidecar volume(s) (state + socket)"
-print -r -- "  prune dangling images"
+# Two calls rather than one `{{.State}}` template: -a lists every sidecar
+# (stopped ones need cleaning up too) and the second, without -a, lists only
+# the running ones. Set membership then says which is which — `{{.Status}}`
+# is a human string ("Up 22 hours", "Exited (0) 3 days ago") and must never be
+# what a destructive decision is made on.
+local -a sidecar_lines=() sidecars=() running=()
+sidecar_lines=(${(f)"$(command docker ps -a --filter 'name=^claude-ts-' --format '{{.Names}}|{{.Status}}')"})
+sidecar_lines=(${sidecar_lines:#})
+running=(${(f)"$(command docker ps --filter 'name=^claude-ts-' --format '{{.Names}}')"})
+running=(${running:#})
+for line in "${sidecar_lines[@]}"; do
+    sidecars+=("${line%%|*}")
+done
+
+local -a volumes=() dangling=()
+volumes=(${(f)"$(command docker volume ls -q --filter 'name=^claude-ts-state-' --filter 'name=^claude-ts-sock-')"})
+volumes=(${volumes:#})
+# A volume Docker calls dangling is attached to no container at all; ours that
+# are not dangling are therefore held by one of the sidecars above.
+dangling=(${(f)"$(command docker volume ls -q --filter dangling=true)"})
+dangling=(${dangling:#})
+
+local -a state_dirs=() state_desc=()
+local root dirs_n du_h
+for root in "${state_roots[@]}"; do
+    local -a inst=("$root/instances"/*(N/))
+    (( ${#inst} )) || continue
+    state_dirs+=("$root/instances")
+    dirs_n=${#inst}
+    du_h="$(command du -sh "$root/instances" 2>/dev/null | command awk '{print $1}')"
+    state_desc+=("${(D)root}/instances   ($dirs_n instance(s)${du_h:+, $du_h})")
+done
+
+# ---- preview --------------------------------------------------------------
+
+local -a in_use=() orphaned=()
+local vol
+for vol in "${volumes[@]}"; do
+    if (( ${dangling[(Ie)$vol]} )); then
+        orphaned+=("$vol")
+    else
+        in_use+=("$vol")
+    fi
+done
+
+_claude_docker_info "this will:"
+print -r -- "  stop ${#sandboxes} labelled sandbox container(s)"
+
+if (( ${#sidecars} )); then
+    print -r -- "  remove ${#sidecars} sidecar container(s):"
+    for line in "${sidecar_lines[@]}"; do
+        if (( ${running[(Ie)${line%%|*}]} )); then
+            printf '      %-58s [%s]  <- RUNNING\n' "${line%%|*}" "${line#*|}"
+        else
+            printf '      %-58s [%s]\n' "${line%%|*}" "${line#*|}"
+        fi
+    done
+    if (( ${#running} )); then
+        print -r -- "  WARNING: ${#running} sidecar(s) above are UP and may carry live Claude"
+        print -r -- "           sessions — including ones started by the older fish functions,"
+        print -r -- "           which carry no label and so are NOT in the sandbox count above."
+        print -r -- "           Those sessions run inside the sidecar's network namespace and"
+        print -r -- "           die the moment it is removed."
+    fi
+fi
+
+if (( ${#present} )); then
+    # "up to": the tags are built FROM one another and share layers, so the sum
+    # is an upper bound on what the disk actually gets back. If docker reported
+    # no size at all, say nothing rather than print a confident "0 bytes".
+    if (( total_bytes > 0 )); then
+        print -r -- "  remove ${#present} image tag(s), freeing up to $total_h (each rebuild takes ~15 min):"
+    else
+        print -r -- "  remove ${#present} image tag(s) (each rebuild takes ~15 min):"
+    fi
+    for (( i = 1; i <= ${#present}; i++ )); do
+        printf '      %-42s %s\n' "$present[i]" "$present_size[i]"
+    done
+fi
+(( ${#absent} )) && print -r -- "    not present, will skip: ${(j:, :)absent}"
+
+if (( ${#volumes} )); then
+    print -r -- "  remove ${#volumes} sidecar volume(s) — ${#in_use} in use by the sidecars above, ${#orphaned} orphaned:"
+    for vol in "${volumes[@]}"; do
+        if (( ${in_use[(Ie)$vol]} )); then
+            printf '      %-58s in use\n' "$vol"
+        else
+            printf '      %-58s orphaned\n' "$vol"
+        fi
+    done
+fi
+
+if (( do_state )) && (( ${#state_dirs} )); then
+    print -r -- "  remove per-directory state (teams, tasks, projects):"
+    for line in "${state_desc[@]}"; do
+        print -r -- "      $line"
+    done
+fi
+
+if (( do_prune )); then
+    print -r -- "  prune dangling images — EVERY dangling image on this host, including"
+    print -r -- "      other projects' build leftovers, not just tupperclaude's."
+fi
+
 print -r -- ""
 print -r -- "Preserved (not touched):"
 print -r -- "  ~/.config/claude-docker/.credentials.json"
 print -r -- "  ~/.config/claude-docker-playwright/.credentials.json"
+if (( ! do_state )); then
+    if (( ${#state_dirs} )); then
+        print -r -- "  per-directory state (teams, tasks, projects) — pass --state to remove:"
+        for line in "${state_desc[@]}"; do
+            print -r -- "      $line"
+        done
+    else
+        print -r -- "  per-directory state (none found) — --state would remove it"
+    fi
+fi
+if (( ${#other_tags} )); then
+    print -r -- "  other tags of these repositories (docker rmi only touches :latest):"
+    for line in "${other_tags[@]}"; do
+        print -r -- "      $line"
+    done
+fi
+(( ! do_prune )) && print -r -- "  dangling images elsewhere on this host — pass --prune to remove those too"
 
-if (( ! yes )); then
+if (( dry )); then
     print -r -- ""
-    local REPLY
-    read -q "REPLY?Continue? [y/N] "
-    print -r -- ""
-    if [[ "$REPLY" != y ]]; then
-        print -r -- "tupperclaude: aborted, nothing removed."
+    _claude_docker_info "dry run — nothing was removed."
+    return 0
+fi
+
+# ---- confirmation ---------------------------------------------------------
+
+# Expensive enough to deserve a typed word rather than one keypress: a live
+# session that can be killed, or more than a gigabyte of multi-hour rebuild.
+local -i costly=0
+(( ${#running} || total_bytes > 1000000000 )) && costly=1
+
+if (( yes )); then
+    if (( ${#running} && ! force )); then
+        print -r -- ""
+        _claude_docker_err "refusing --yes: ${#running} sidecar(s) are running and removing them kills any session using them" \
+            "docker ps --filter 'name=^claude-ts-'    # what is still up" \
+            'claude-docker-clean --dry-run            # see the full plan' \
+            'claude-docker-clean --yes --force        # proceed anyway'
         return 1
     fi
+else
+    # read -q / read -r need a real terminal; without one zsh emits a raw
+    # "not interactive and can't open terminal" and the caller has no idea
+    # which half of the plan ran.
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        print -r -- ""
+        _claude_docker_err "claude-docker-clean needs an interactive terminal to confirm" \
+            'run it directly in your shell, not through a pipe or a script' \
+            'claude-docker-clean --dry-run    # see the plan without touching anything' \
+            'claude-docker-clean --yes        # confirm up front, non-interactively'
+        return 1
+    fi
+    print -r -- ""
+    local REPLY=''
+    if (( costly )); then
+        read -r "REPLY?Type 'yes' to proceed: "
+        print -r -- ""
+        if [[ $REPLY != yes ]]; then
+            # Declining is a successful outcome, not a failure: returning
+            # non-zero here would break `claude-docker-clean && ...` and abort
+            # any `set -e` script that offered the prompt.
+            _claude_docker_info "aborted, nothing removed."
+            return 0
+        fi
+    else
+        read -q "REPLY?Continue? [y/N] "
+        print -r -- ""
+        if [[ $REPLY != y ]]; then
+            _claude_docker_info "aborted, nothing removed."
+            return 0
+        fi
+    fi
 fi
+
+# ---- removal --------------------------------------------------------------
+
+local -i failures=0
+local err rc
 
 if (( ${#sandboxes} )); then
-    print -r -- "Stopping sandboxes…"
-    command docker stop "${sandboxes[@]}" >/dev/null
+    _claude_docker_info "stopping sandboxes…"
+    command docker stop "${sandboxes[@]}" >/dev/null 2>&1 || (( failures++ ))
 fi
 
-print -r -- "Removing images…"
-local img
-for img in "${images[@]}"; do
-    if command docker rmi "$img" >/dev/null 2>&1; then
-        print -r -- "  removed $img"
-    else
-        print -r -- "  not present, skipping: $img"
-    fi
-done
-
+# Containers before images and volumes: an image or volume still referenced by
+# a container cannot be removed, and reporting that as "not present" is exactly
+# the lie this rewrite exists to kill.
 if (( ${#sidecars} )); then
-    print -r -- "Removing Tailscale sidecars…"
-    command docker rm -f "${sidecars[@]}" >/dev/null
+    _claude_docker_info "removing sidecars…"
+    command docker rm -f "${sidecars[@]}" >/dev/null 2>&1 || (( failures++ ))
+fi
+
+if (( ${#present} )); then
+    _claude_docker_info "removing images…"
+    for (( i = 1; i <= ${#present}; i++ )); do
+        err="$(command docker rmi "$present[i]" 2>&1 >/dev/null)"
+        rc=$?
+        if (( rc == 0 )); then
+            print -r -- "  removed $present[i]  ($present_size[i])"
+        elif [[ $err == *'No such image'* || $err == *'No such object'* ]]; then
+            print -r -- "  not present, skipped: $present[i]"
+        else
+            (( failures++ ))
+            _claude_docker_warn "could not remove $present[i]: ${err:-unknown error}" \
+                "docker ps -a --filter ancestor=$present[i]    # what is holding it" \
+                "docker rm -f <container> && claude-docker-clean"
+        fi
+    done
 fi
 
 if (( ${#volumes} )); then
-    print -r -- "Removing sidecar volumes…"
-    command docker volume rm "${volumes[@]}" >/dev/null
+    _claude_docker_info "removing sidecar volumes…"
+    for vol in "${volumes[@]}"; do
+        err="$(command docker volume rm "$vol" 2>&1 >/dev/null)"
+        rc=$?
+        if (( rc == 0 )); then
+            print -r -- "  removed $vol"
+        elif [[ $err == *'no such volume'* || $err == *'No such volume'* ]]; then
+            print -r -- "  not present, skipped: $vol"
+        else
+            (( failures++ ))
+            _claude_docker_warn "could not remove volume $vol: ${err:-unknown error}" \
+                "docker ps -a --filter volume=$vol    # what is holding it" \
+                "docker rm -f <container> && claude-docker-clean"
+        fi
+    done
 fi
 
-print -r -- "Pruning dangling images…"
-command docker image prune -f >/dev/null
+if (( do_state )) && (( ${#state_dirs} )); then
+    _claude_docker_info "removing per-directory state…"
+    for root in "${state_dirs[@]}"; do
+        if command rm -rf -- "$root"; then
+            print -r -- "  removed ${(D)root}"
+        else
+            (( failures++ ))
+            _claude_docker_warn "could not remove ${(D)root}" \
+                "rm -rf ${(q)root}"
+        fi
+    done
+fi
+
+if (( do_prune )); then
+    _claude_docker_info "pruning dangling images (host-wide)…"
+    command docker image prune -f >/dev/null 2>&1 || (( failures++ ))
+fi
 
 print -r -- ""
-print -r -- "Done. Docker-only Claude credentials preserved at:"
+if (( failures )); then
+    _claude_docker_err "$failures step(s) failed — see the warnings above; nothing else was affected" \
+        'claude-docker-clean --dry-run    # re-check what is left'
+    return 1
+fi
+
+_claude_docker_info "done. Docker-only Claude credentials preserved at:"
 print -r -- "  ~/.config/claude-docker/.credentials.json"
 print -r -- "  ~/.config/claude-docker-playwright/.credentials.json"
 print -r -- "To clear them: rm ~/.config/claude-docker/.credentials.json ~/.config/claude-docker-playwright/.credentials.json"
-print -r -- "Run claude-docker-arm-build / claude-docker-amd64-build (and their -playwright siblings) to rebuild."
+print -r -- "Run claude-docker-build-arm / claude-docker-build-amd64 (and their -playwright siblings) to rebuild."
+return 0

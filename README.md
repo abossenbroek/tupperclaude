@@ -24,13 +24,13 @@ See [INSTALL.md](INSTALL.md) for oh-my-zsh, zinit, antigen, zplug, and manual se
 | `claude-docker-status` | List running tupperclaude containers and sidecars |
 | `claude-docker-clean` | Remove containers, sidecars, and per-directory state |
 | `claude-docker-shell` | Open a shell in a running container without launching `claude` |
-| `claude-docker-arm-build` | Build the `linux/arm64` image (native on Apple Silicon) |
+| `claude-docker-build-arm` | Build the `linux/arm64` image (native on Apple Silicon) |
 | `claude-docker-arm` | Run Claude Code in the arm64 container |
-| `claude-docker-arm-playwright-build` | Build the `linux/arm64` Playwright variant |
+| `claude-docker-build-arm-playwright` | Build the `linux/arm64` Playwright variant |
 | `claude-docker-arm-playwright` | Run Claude Code in the arm64 Playwright container |
-| `claude-docker-amd64-build` | Build the `linux/amd64` image (native on Intel Macs, QEMU cross-build on Apple Silicon — see [Known limitations](#known-limitations)) |
+| `claude-docker-build-amd64` | Build the `linux/amd64` image (native on Intel Macs, QEMU cross-build on Apple Silicon — see [Known limitations](#known-limitations)) |
 | `claude-docker-amd64` | Run Claude Code in the amd64 container |
-| `claude-docker-amd64-playwright-build` | Build the `linux/amd64` Playwright variant |
+| `claude-docker-build-amd64-playwright` | Build the `linux/amd64` Playwright variant |
 | `claude-docker-amd64-playwright` | Run Claude Code in the amd64 Playwright container |
 | `claude-ts-ensure` | (internal) Bring up / repair the Tailscale sidecar |
 
@@ -46,7 +46,7 @@ zombie reaping, so no extra `--init` flag is needed.
 ```zsh
 cd ~/some/project
 claude-docker-configure     # first time only
-claude-docker-arm-build     # first time only, or after upgrading the Dockerfile
+claude-docker-build-arm     # first time only, or after upgrading the Dockerfile
 claude-docker-arm
 ```
 
@@ -121,7 +121,7 @@ Includes AWS CLI v2 in the image. Off by default to keep the image smaller.
 
 ```zsh
 export CLAUDE_DOCKER_INCLUDE_AWS=1
-claude-docker-arm-build
+claude-docker-build-arm
 ```
 
 At run time `~/.aws` is mounted read-only and copied into the container, so your
@@ -362,7 +362,7 @@ published checksum file:
 
 ## Known limitations
 
-- **`claude-docker-amd64-build` on Apple Silicon is untested end to end.** It works
+- **`claude-docker-build-amd64` on Apple Silicon is untested end to end.** It works
   mechanically — `docker build --platform linux/amd64` cross-builds under QEMU — but a
   full toolchain build under emulation is prohibitively slow (the Rust layer alone can
   take a very long time), and no one has sat through a full run to confirm the result.
@@ -420,7 +420,8 @@ one.
 3. Verify nothing was missed:
 
    ```zsh
-   docker ps -a --filter label=tupperclaude.dir --filter name=claude-ts- --format '{{.Names}}'
+   docker ps -a --filter label=tupperclaude.dir --format '{{.Names}}'   # sandboxes
+   docker ps -a --filter name=claude-ts- --format '{{.Names}}'          # sidecars
    ```
 
    An empty result means it's fully removed.

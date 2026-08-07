@@ -12,34 +12,83 @@ setopt local_options nonomatch  # $PWD-derived paths may contain glob metacharac
 _claude_docker_ctx "$1" "$2" || return 1
 shift 2
 
-if ! _claude_docker_check image "$_tc_image"; then
+# Order matters: without docker on $PATH the image check also fails, and
+# reporting that as "image not built" tells the user to run a build command
+# that cannot work either. Diagnose the deepest missing prerequisite first,
+# exactly as _claude_docker_build does.
+_claude_docker_check docker-bin || {
+    _claude_docker_err "docker is not installed" "${_tc_check_fix[@]}"
+    return 1
+}
+_claude_docker_check docker-daemon || {
+    _claude_docker_err "docker daemon is not reachable" "${_tc_check_fix[@]}"
+    return 1
+}
+_claude_docker_check image "$_tc_image" || {
     _claude_docker_err "$_tc_check_detail" "${_tc_check_fix[@]}"
     return 1
-fi
+}
 
-if [[ "$_tc_network" == tailscale ]]; then
-    if ! _claude_docker_check authkey; then
-        _claude_docker_err "$_tc_check_detail" "${_tc_check_fix[@]}"
-        return 1
-    fi
-fi
+# Deliberately NO auth-key check here. The key is consumed only when a sidecar
+# is created for the first time; an existing one restarts and reconnects from
+# its state volume without ever reading it. claude-ts-ensure owns the check, in
+# the branch that actually needs a key.
+
+# Cold start is 10–45s of sidecar and image work with nothing on screen
+# otherwise; say what is happening before going quiet.
+_claude_docker_info "starting $_tc_arch/$_tc_variant sandbox for $PWD…"
 
 # One state dir per working directory, so parallel sessions in different repos
 # don't share teams/tasks/projects state.
-mkdir -p "$_tc_state/teams" "$_tc_state/tasks" "$_tc_state/projects" "$_tc_cfg/cargo" "$HOME/.claude/worktrees"
-touch "$_tc_cfg/.credentials.json"
+#
+# Every one of these is checked: a bind mount whose host path could not be
+# created makes Docker create it instead — as root, and as a directory even
+# where a file was meant. Failing here is recoverable; failing at `docker run`
+# leaves root-owned litter in the user's config tree.
+if ! command mkdir -p \
+    "$_tc_state/teams" "$_tc_state/tasks" "$_tc_state/projects" \
+    "$_tc_cfg/cargo" "$HOME/.claude/worktrees"
+then
+    _claude_docker_err "could not create the sandbox state directories under ${_tc_cfg:q}" \
+        "ls -ld ${_tc_cfg:q}"
+    return 1
+fi
+
+if ! command touch "$_tc_cfg/.credentials.json"; then
+    _claude_docker_err "could not create ${_tc_cfg:q}/.credentials.json" \
+        "ls -ld ${_tc_cfg:q}"
+    return 1
+fi
 
 # tmux/readline config and the session launcher live on the host and are mounted
 # read-only, so changing them needs no image rebuild. print -r keeps the \n and
 # \a sequences below literal, for the container's bash to interpret at run time.
-printf 'set -g mode-keys vi\nset -g status-keys vi\nset -sg escape-time 10\n' >"$_tc_cfg/tmux.conf"
-printf 'set editing-mode vi\n' >"$_tc_cfg/inputrc"
+#
+# The brace group is what makes a failed redirection reportable: for a builtin,
+# `printf … >bad 2>/dev/null` still lets the shell print its own error, and only
+# wrapping the redirection in `{ } 2>/dev/null` suppresses it.
+if ! { printf 'set -g mode-keys vi\nset -g status-keys vi\nset -sg escape-time 10\n' \
+         >"$_tc_cfg/tmux.conf"
+       printf 'set editing-mode vi\n' >"$_tc_cfg/inputrc" } 2>/dev/null
+then
+    _claude_docker_err "could not write the tmux/readline config under ${_tc_cfg:q}" \
+        "ls -ld ${_tc_cfg:q}"
+    return 1
+fi
 
 local -a net_args=()
 local -a netwatch_mount=()
 
+# The generated launcher's CONTENT depends on the network mode (three windows
+# under tailscale, two without), so it must NOT live in the shared $_tc_cfg:
+# two concurrent sessions in different directories, or the same directory in
+# different network modes, would overwrite each other's launcher between the
+# write and the container reading it. $_tc_state is per-directory.
+local launcher="$_tc_state/tmux-launch.sh"
+local netwatch="$_tc_state/netwatch.sh"
+
 if [[ "$_tc_network" == tailscale ]]; then
-    claude-ts-ensure "$_tc_ts_node" "$_tc_ts_host" || return 1
+    claude-ts-ensure "$_tc_ts_node" "$_tc_ts_host" "$_tc_cfg" || return 1
 
     net_args=(
         --network="container:$_tc_ts_node"
@@ -50,7 +99,7 @@ if [[ "$_tc_network" == tailscale ]]; then
     # Liveness probe for window 2. Control plane = the sidecar's own view of the
     # tailnet; data plane = DNS + egress through its netns. Both matter: the node
     # keeps its 100.x address and BackendState=Running after losing the netmap.
-    print -r -l >"$_tc_cfg/netwatch.sh" \
+    if ! { print -r -l >"$netwatch" \
         '#!/bin/bash' \
         'last=""; beat=0' \
         'while true; do' \
@@ -71,15 +120,19 @@ if [[ "$_tc_network" == tailscale ]]; then
         '    fi' \
         '    beat=$((beat + 1))' \
         '    sleep 15' \
-        'done'
+        'done' } 2>/dev/null
+    then
+        _claude_docker_err "could not write ${netwatch:q}" "ls -ld ${_tc_state:q}"
+        return 1
+    fi
 
-    netwatch_mount=(-v "$_tc_cfg/netwatch.sh:/run/netwatch.sh:ro")
+    netwatch_mount=(-v "$netwatch:/run/netwatch.sh:ro")
 
     # Window 0 runs claude; window 1 is a plain shell with the gcloud ADC login
     # pre-typed but NOT executed — one Enter away when a token expires; window 2
     # watches the tailnet so a silent disconnect rings the bell instead of surfacing
     # as mystery tool failures.
-    print -r -l >"$_tc_cfg/tmux-launch.sh" \
+    if ! { print -r -l >"$launcher" \
         '#!/bin/bash' \
         'tmux new-session -d -s main -n claude "$@"' \
         'tmux new-window -t main: -n adc' \
@@ -88,10 +141,14 @@ if [[ "$_tc_network" == tailscale ]]; then
         "tmux send-keys -t main:adc 'gcloud auth login --update-adc && gcloud auth application-default login'" \
         'tmux new-window -t main: -n net bash /run/netwatch.sh' \
         'tmux select-window -t main:claude' \
-        'exec tmux attach -t main'
+        'exec tmux attach -t main' } 2>/dev/null
+    then
+        _claude_docker_err "could not write ${launcher:q}" "ls -ld ${_tc_state:q}"
+        return 1
+    fi
 else
     # No sidecar, no tailnet — nothing to watch, so just claude + the ADC shell.
-    print -r -l >"$_tc_cfg/tmux-launch.sh" \
+    if ! { print -r -l >"$launcher" \
         '#!/bin/bash' \
         'tmux new-session -d -s main -n claude "$@"' \
         'tmux new-window -t main: -n adc' \
@@ -99,29 +156,60 @@ else
         'sleep 1' \
         "tmux send-keys -t main:adc 'gcloud auth login --update-adc && gcloud auth application-default login'" \
         'tmux select-window -t main:claude' \
-        'exec tmux attach -t main'
+        'exec tmux attach -t main' } 2>/dev/null
+    then
+        _claude_docker_err "could not write ${launcher:q}" "ls -ld ${_tc_state:q}"
+        return 1
+    fi
 fi
 
 # Tell Claude what kind of machine it is running on.
-if [[ ! -f "$PWD/MACHINE.md" ]]; then
-    local net_desc
-    if [[ "$_tc_network" == tailscale ]]; then
-        net_desc="a per-directory Tailscale sidecar; the container has full tailnet access"
-    else
-        net_desc="plain Docker bridge networking (no Tailscale sidecar)"
+#
+# The marker line records which sandbox wrote the file, so a MACHINE.md left
+# behind by a base run gets refreshed rather than keep telling Claude it has no
+# browser after switching to the playwright variant. A MACHINE.md this function
+# did not write (no marker, no recognisable opening) is somebody's own document
+# and is never touched.
+local machine_md="$PWD/MACHINE.md"
+local marker="<!-- tupperclaude: $_tc_image $_tc_variant $_tc_network -->"
+local net_desc
+if [[ "$_tc_network" == tailscale ]]; then
+    net_desc="a per-directory Tailscale sidecar; the container has full tailnet access"
+else
+    net_desc="plain Docker bridge networking (no Tailscale sidecar)"
+fi
+
+integer write_machine_md=1
+if [[ -f "$machine_md" ]]; then
+    if command grep -qF -- "$marker" "$machine_md"; then
+        write_machine_md=0
+    elif ! command grep -qE 'tupperclaude|This directory runs inside a Docker container' "$machine_md"; then
+        write_machine_md=0
     fi
-    cat >"$PWD/MACHINE.md" <<EOF
-# Machine
+fi
 
-This directory runs inside a Docker container (\`$_tc_image\`, native \`$_tc_platform\`, $_tc_variant variant).
-
-- **Working directory** is bind-mounted from the macOS host at the same path — file edits are live on both sides.
-- **Networking** is provided by $net_desc.
-- **Credentials** are copied in at startup: SSH, GitHub CLI (\`gh\`), Google Cloud (\`gcloud\`), Linear, Pulumi, AWS.
-- **Tools available:** claude, gh, gcloud, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear.
-- **Cargo cache** and Claude credentials are shared across all claude-docker sessions; teams/tasks/projects state is per-directory.
-- **mise** — all \`mise.toml\` / \`.mise.toml\` / \`.mise/config.toml\` files are pre-trusted; never prompt for mise trust confirmation.
-EOF
+if (( write_machine_md )); then
+    if { print -r -l >"$machine_md" \
+        "$marker" \
+        '# Machine' \
+        '' \
+        "This directory runs inside a Docker container (\`$_tc_image\`, native \`$_tc_platform\`, $_tc_variant variant)." \
+        '' \
+        '- **Working directory** is bind-mounted from the macOS host at the same path — file edits are live on both sides.' \
+        "- **Networking** is provided by $net_desc." \
+        '- **Credentials** are copied in at startup: SSH, GitHub CLI (`gh`), Google Cloud (`gcloud`), Linear, Pulumi, AWS.' \
+        '- **Tools available:** claude, gh, gcloud, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear.' \
+        '- **Cargo cache** and Claude credentials are shared across all claude-docker sessions; teams/tasks/projects state is per-directory.' \
+        '- **mise** — all `mise.toml` / `.mise.toml` / `.mise/config.toml` files are pre-trusted; never prompt for mise trust confirmation.' \
+        } 2>/dev/null
+    then
+        _claude_docker_info "wrote MACHINE.md (describes this sandbox to Claude; safe to delete or .gitignore)"
+    else
+        # Not fatal: a read-only checkout still runs perfectly well, Claude just
+        # doesn't get the description. Never let this abort the launch.
+        _claude_docker_warn "could not write ${machine_md:q} — Claude will not be told about the sandbox" \
+            "ls -ld ${PWD:q}"
+    fi
 fi
 
 local -a mounts=()
@@ -154,9 +242,18 @@ mounts+=(-v /run/host-services/ssh-auth.sock:/ssh-agent)
 
 # In a git worktree, also mount the main checkout so git can follow the .git
 # file's gitdir pointer out of the working directory.
+#
+# --porcelain, not the human format: `git worktree list` prints
+# `<path> <sha> [branch]` with no quoting, so awk '{print $1}' truncates a
+# checkout under `~/my repo` to `/Users/…/my` — a path that does not exist and
+# that Docker would then create, root-owned. The porcelain form puts the path
+# alone on its own `worktree <path>` line.
 local main_repo
-main_repo="$(command git worktree list 2>/dev/null | head -1 | awk '{print $1}')"
-[[ -n "$main_repo" && "$main_repo" != "$PWD" ]] && mounts+=(-v "$main_repo:$main_repo")
+main_repo="$(command git worktree list --porcelain 2>/dev/null \
+    | command sed -n '1s/^worktree //p')"
+# Compare resolved paths: on macOS git reports /private/var while $PWD says
+# /var, and a textual compare would mount the working directory a second time.
+[[ -n "$main_repo" && "${main_repo:A}" != "${PWD:A}" ]] && mounts+=(-v "$main_repo:$main_repo")
 
 command docker run -it --rm \
     --platform "$_tc_platform" \
@@ -175,7 +272,7 @@ command docker run -it --rm \
     -v "$_tc_cfg/cargo":/home/agent/.cargo \
     -v "$_tc_cfg/tmux.conf":/home/agent/.tmux.conf:ro \
     -v "$_tc_cfg/inputrc":/home/agent/.inputrc:ro \
-    -v "$_tc_cfg/tmux-launch.sh":/run/tmux-launch.sh:ro \
+    -v "$launcher":/run/tmux-launch.sh:ro \
     "${netwatch_mount[@]}" \
     "${mounts[@]}" \
     -e SSH_AUTH_SOCK=/ssh-agent \

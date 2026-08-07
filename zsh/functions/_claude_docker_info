@@ -1,0 +1,17 @@
+#!/usr/bin/env zsh
+# _claude_docker_info <message>
+#
+# House style for user-facing progress/status. Unlike _claude_docker_err and
+# _claude_docker_warn this goes to *stdout* (it is not a diagnostic) and always
+# returns 0, so it can be dropped into a `&&` chain without changing control
+# flow.
+#
+# Prefixed `tupperclaude:` rather than `tupperclaude-zsh:` so the messages read
+# identically in the fish sibling. Nothing anywhere should print a bare
+# `<function-name>: ...` prefix — route every progress line through here.
+
+emulate -L zsh
+setopt local_options
+
+print -r -- "tupperclaude: $1"
+return 0
