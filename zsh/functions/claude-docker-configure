@@ -185,7 +185,14 @@ function _claude_docker_configure_uncomment {
 }
 function _claude_docker_configure_sub {
     local name=$1 value=$2
-    local esc=${value//\\/\\\\}
+    # Two layers, and the order matters. First shell quoting: the value lands
+    # inside a single-quoted zstyle line, so a ' in it would close that quote
+    # early and produce invalid zsh — `op://Ada's Vault/Tailscale/authkey` is
+    # an ordinary 1Password reference, not a pathological one. Close, escape,
+    # reopen: ' becomes '\''. Then sed-replacement escaping on the result, which
+    # is what turns the \ this just introduced back into a literal one.
+    local esc=${value//\'/\'\\\'\'}
+    esc=${esc//\\/\\\\}
     esc=${esc//&/\\&}
     esc=${esc//\//\\/}
     _claude_docker_sed_i "s/^zstyle ':omz:plugins:tupperclaude' $name .*/zstyle ':omz:plugins:tupperclaude' $name '$esc'/" "$3"

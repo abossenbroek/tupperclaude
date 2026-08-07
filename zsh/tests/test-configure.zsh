@@ -193,6 +193,43 @@ check "wizard: sourcing the generated config really sets the zstyle" $? "got: $r
 check "wizard: echoes each answer back" $? "transcript: $out"
 
 # ============================================================================
+# a 1Password reference containing shell metacharacters
+# ============================================================================
+#
+# The value is interpolated into a SINGLE-QUOTED zstyle line, so a ' in it used
+# to close that quote early and hand the user a config that failed the wizard's
+# own `zsh -n` gate — with a "this is a bug in claude-docker-configure" message
+# and no config at all. `op://Ada's Vault/Tailscale/authkey` is an ordinary
+# 1Password vault name, so this was reachable by an ordinary user.
+#
+# Round-tripping is the real assertion: an escape that yields valid zsh but the
+# wrong value is worse than the syntax error it replaced. So each case below
+# sources the generated file and compares the zstyle against the typed string.
+
+# quote_case <description> <op-ref value>
+quote_case() {
+    local desc=$1 value=$2
+    run_wizard $'1\n1\n'"$value"$'\ny\n'
+
+    [[ -n $cfg ]]
+    check "wizard/$desc: a config was written at all" $? "home: $wizhome"
+
+    zsh -n "$wizhome/.tupperclaude.zsh"
+    check "wizard/$desc: the generated config passes zsh -n" $? "config: $cfg"
+
+    local got
+    got="$(zsh -f -c "source $wizhome/.tupperclaude.zsh; zstyle -s ':omz:plugins:tupperclaude' op-ref v; print -rn -- \$v")"
+    [[ $got == "$value" ]]
+    check "wizard/$desc: the op-ref round-trips to the exact typed value" $? \
+        "want: $value" "got:  $got"
+}
+
+quote_case single-quote "op://Ada's Vault/Tailscale/authkey"
+quote_case backslash 'op://Back\slash Vault/Tailscale/authkey'
+quote_case ampersand 'op://A&B Vault/Tailscale/authkey'
+quote_case quote-backslash-ampersand "op://Ada's A&B\\Vault/Tailscale/authkey"
+
+# ============================================================================
 # defaults, and unrecognised input
 # ============================================================================
 
