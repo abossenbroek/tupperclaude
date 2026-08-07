@@ -12,7 +12,7 @@ fisher install <path-to-clone>/fish
 
 It will share `docker/` and all host state (`~/.config/claude-docker` and its
 `-playwright` sibling — or wherever `home` points — the cargo cache, and the sandbox's
-own Claude credentials file) with the zsh plugin in this repo, so both can be installed
+own Claude credentials file) with the zsh plugin in this repo; both can be installed
 side by side and used interchangeably on the same machine — run
 `claude-docker-arm` from either shell against the same images and the same per-directory
 state.
@@ -24,7 +24,7 @@ their `-playwright` siblings), the run commands (`claude-docker-arm`,
 `-configure`, `-status`, `-shell`, `-clean`).
 
 The zsh plugin's **diagnostics** already carry a shell-neutral `tupperclaude:` prefix
-rather than a zsh-specific one, so those read identically here: everything routed through
+rather than a zsh-specific one, and those read identically here: everything routed through
 `_claude_docker_err` (`tupperclaude: error: …`), `_claude_docker_warn`
 (`tupperclaude: warning: …`) and `_claude_docker_info` (`tupperclaude: …`). Plenty of
 other output is deliberately bare, though: the build's per-tool version sweep, the
@@ -34,7 +34,7 @@ the wizard's questions are `read -r "key?…"` prompts. A fish port has to repro
 that too, and none of it comes free with the helpers.
 
 The zsh plugin's configuration lives in `zstyle ':omz:plugins:tupperclaude' <key>` lines
-with `CLAUDE_DOCKER_*` environment-variable fallbacks. fish has no `zstyle`, so the fish
+with `CLAUDE_DOCKER_*` environment-variable fallbacks. fish has no `zstyle`; the fish
 implementation will read the environment variables; the `~/.tupperclaude.zsh` file
 written by `claude-docker-configure` is zsh-only and will need a fish equivalent.
 

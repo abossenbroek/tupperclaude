@@ -9,7 +9,7 @@
 Or email anton@bossenbroek.ai.
 
 Expect an acknowledgement within a week. This is a personal project maintained in spare
-time, so please read that as a genuine estimate rather than an SLA.
+time; read that as a genuine estimate rather than an SLA.
 
 ## What is in scope
 
@@ -30,15 +30,15 @@ what the documentation describes is worth reporting. In particular:
 ## What is not a vulnerability
 
 The sandbox is **not a security boundary against code running inside it**, and the README
-says so. It is a reproducible, disposable environment — its isolation is about not
+says as much. It is a reproducible, disposable environment — its isolation is about not
 polluting the host.
 
-So these are known and documented, not findings:
+These are known and documented, not findings:
 
 - code in the sandbox can use the forwarded SSH agent and the copied cloud credentials
 - with `docker-sock on` (the default) the sandbox can reach the host Docker socket, which
   is equivalent to root on the host
-- API keys are visible in the `docker run` command line, so `ps` and `docker inspect`
+- API keys are visible in the `docker run` command line, which means `ps` and `docker inspect`
   show them
 - the built image is private by design; `~/.claude.json` can contain inline MCP API keys
   and the build warns when it spots key-shaped fields
@@ -52,7 +52,7 @@ written promise.
 Third-party components in `docker/Dockerfile` are version-pinned and checksum-verified,
 with documented exceptions (Claude Code tracks `latest` by design; aws-cli has no
 vendor-published checksum). README.md lists each exception and where every checksum comes
-from, so you can re-derive any pin yourself.
+from, letting you re-derive any pin yourself.
 
 A pin that does not match what the vendor publishes is a security report, not a bug
 report.

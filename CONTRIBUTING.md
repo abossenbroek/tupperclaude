@@ -7,12 +7,12 @@
 > If you used **any kind of AI assistance** to make a contribution, disclose it in the
 > pull request, along with how far it went.
 
-This project is not neutral on the question and should say so plainly: **most of
+This project is not neutral on the question and should be plain about it: **most of
 tupperclaude was written with Claude Code.** Run `git log` and you will find
 `Co-Authored-By: Claude` on the majority of commits. A tool for running Claude Code in a
 sandbox, refusing AI-assisted contributions, would be an odd document to write.
 
-So this is not a policy against AI. It is a policy against *undisclosed* AI, and against
+This is not a policy against AI. It is a policy against *undisclosed* AI, and against
 the specific failure modes that unreviewed generation brings.
 
 ### Disclose, with the extent
@@ -69,11 +69,11 @@ Two things worth checking first, because they account for most reports:
 - **Read the error.** Every error in this codebase ends with a command you can paste. If
   it named one, run it.
 - **A non-Docker-Desktop engine loses SSH agent forwarding.** OrbStack and Colima do not
-  synthesise `/run/host-services/ssh-auth.sock`, so `git push` over SSH fails inside the
+  synthesise `/run/host-services/ssh-auth.sock`, leaving `git push` over SSH broken inside the
   sandbox and `claude-docker-doctor` exits non-zero. Known limitation, in README.md.
 
 **Security problems do not go in the issue tracker** — see [SECURITY.md](SECURITY.md).
-The sandbox holds your SSH agent and cloud credentials, so a public issue is the wrong
+The sandbox holds your SSH agent and cloud credentials, which makes a public issue the wrong
 first move.
 
 ## Branches

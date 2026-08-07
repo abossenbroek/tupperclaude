@@ -1,4 +1,4 @@
-# Blank issues are off so every report arrives with the doctor output, the
+# Blank issues are off to ensure every report arrives with the doctor output, the
 # command, the install method and the engine — the four things a diagnosis here
 # always needs and which are tedious to chase afterwards.
 blank_issues_enabled: false
@@ -6,7 +6,7 @@ contact_links:
   - name: Security vulnerability
     url: https://github.com/abossenbroek/tupperclaude/security/advisories/new
     about: >
-      Report privately. The sandbox holds SSH agents and cloud credentials, so
+      Report privately. The sandbox holds SSH agents and cloud credentials, which makes
       a public issue is the wrong first move.
   - name: Question or idea
     url: https://github.com/abossenbroek/tupperclaude/discussions
