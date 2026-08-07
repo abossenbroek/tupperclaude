@@ -431,6 +431,82 @@ check "clean: says the total is a floor when a size could not be parsed" $? "got
 check "clean: never claims a 'freeing up to' figure it could not measure" $? "got: $out"
 
 # ============================================================================
+# an unparseable image size must upgrade the confirmation interlock, not just
+# the preview text
+#
+# --dry-run above proves what gets PRINTED; it never reaches the confirmation
+# block at all, so it cannot prove which prompt a live run would show. The
+# `read -r`/`read -q` guard three lines above (`[[ ! -t 0 || ! -t 1 ]]`) means
+# a plain pipe gets refused outright rather than silently answering the
+# prompt — so this has to run on an actual pty, the same trick test-configure
+# uses for the wizard, via script(1).
+# ============================================================================
+
+# The child the pty runs: source the plugin, run clean, nothing else. Neither
+# --yes (skips the prompt entirely) nor --dry-run (never reaches the
+# confirmation block) — this must take the real interactive branch. --force
+# is rejected on its own (it only unblocks --yes), so it stays off too.
+local -r clean_child="$TC_TEST_WORKDIR/clean-child.zsh"
+print -r -l -- \
+    '#!/usr/bin/env zsh' \
+    'source $TUPPERCLAUDE_TEST_ROOT/tupperclaude.plugin.zsh' \
+    'claude-docker-clean --images' \
+    >$clean_child
+
+# pty_clean <answer> — runs the child on a pty, typing <answer> at whichever
+# prompt appears, and returns the transcript text. Same EOF trap as
+# pty_wizard: the write end has to outlive the read or macOS's script(1)
+# forwards EOF ahead of the buffered answer and the prompt sees an empty
+# line instead. The `sleep 2` holding it open must be a REAL two seconds, so
+# this file must never set FAKE_SLEEP_MAX (see fake-bin/sleep).
+pty_clean() {
+    local answer=$1
+    local transcript="$TC_TEST_WORKDIR/clean-out-$clean_n.txt"
+    (( clean_n++ ))
+    {
+        if [[ "$(command uname -s)" == Darwin ]]; then
+            { print -rn -- "$answer"$'\n\n\n\n'; sleep 2 } | \
+                command script -q /dev/null zsh -f $clean_child >$transcript 2>&1
+        else
+            { print -rn -- "$answer"$'\n\n\n\n'; sleep 2 } | \
+                command script -q -c "zsh -f $clean_child" /dev/null >$transcript 2>&1
+        fi
+    } &
+    local spid=$!
+    integer waited=0
+    while kill -0 $spid 2>/dev/null && (( waited < 40 )); do
+        sleep 0.5
+        (( waited++ ))
+    done
+    kill -9 $spid 2>/dev/null
+    wait $spid 2>/dev/null
+    print -r -- "$transcript"
+}
+integer clean_n=0
+
+# --images only: do_containers and do_state stay 0, so at_risk and
+# state_at_risk are both 0 and `costly` can only come from the images loop —
+# isolating exactly the case this defect covered.
+export FAKE_DOCKER_IMAGES='claude-code-full-arm64'
+export FAKE_DOCKER_IMAGE_TABLE='claude-code-full-arm64|latest|'
+export FAKE_DOCKER_PS_DB=''
+reset_docker_log
+local ct_transcript ct
+ct_transcript="$(pty_clean no)"
+ct="$(<$ct_transcript)"
+[[ $ct != *'not interactive'* && $ct != *"can't open terminal"* ]]
+check "clean: the pty for the confirmation-path test satisfies the TTY guard" $? "transcript: $ct"
+[[ $ct == *"Type 'yes' to proceed"* ]]
+check "clean: an unparseable image size forces the typed-'yes' confirmation, not a keypress" $? "got: $ct"
+[[ $ct != *'Continue? [y/N]'* ]]
+check "clean: never offers the single-keypress path when a size could not be measured" $? "got: $ct"
+
+load_docker_log
+destructive_records
+(( ${#reply} == 0 ))
+check "clean: declining the typed-'yes' prompt removes nothing" $? "${reply[@]}"
+
+# ============================================================================
 # the preserved-credentials paths follow the `home` option
 #
 # These were three hardcoded ~/.config/claude-docker… strings. Under an
