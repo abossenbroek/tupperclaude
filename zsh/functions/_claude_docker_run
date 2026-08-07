@@ -256,10 +256,16 @@ fi
 integer write_machine_md=1
 _claude_docker_opt -b machine-md CLAUDE_DOCKER_MACHINE_MD 1 || write_machine_md=0
 
+# Set when the file in this directory is OURS — either written below, or left
+# by an earlier run of this same sandbox. It is what licenses the removal after
+# the container exits; a file we did not write is never ours to delete.
+integer machine_md_ours=0
+
 if (( write_machine_md )) && [[ -f "$machine_md" ]]; then
     if command grep -qF -- "$marker" "$machine_md"; then
         # Already describes exactly this sandbox — nothing to say.
         write_machine_md=0
+        machine_md_ours=1
     elif ! command grep -qE '^<!-- tupperclaude: .* -->$' "$machine_md"; then
         # Ours would carry a marker line even if it names a different sandbox;
         # this one carries none, so it is not ours to rewrite.
@@ -267,22 +273,29 @@ if (( write_machine_md )) && [[ -f "$machine_md" ]]; then
     fi
 fi
 
+# Built once, as an array, and used twice: written below, and compared against
+# the file on disk after the container exits. Two copies of this text would mean
+# an edit to one silently stopping the cleanup from ever recognising its own
+# output — the file would simply start accumulating again, with nothing failing.
+local -a machine_md_body=(
+    "$marker"
+    '# Machine'
+    ''
+    "This directory runs inside a Docker container (\`$_tc_image\`, native \`$_tc_platform\`, $_tc_variant variant)."
+    ''
+    '- **Working directory** is bind-mounted from the macOS host at the same path — file edits are live on both sides.'
+    "- **Networking** is provided by $net_desc."
+    '- **Credentials** are copied in at startup: SSH, GitHub CLI (`gh`), Google Cloud (`gcloud`), Linear, Pulumi, AWS.'
+    '- **Tools available:** claude, gh, gcloud, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear.'
+    '- **Cargo cache** and Claude credentials are shared across all claude-docker sessions; teams/tasks/projects state is per-directory.'
+    '- **mise** — all `mise.toml` / `.mise.toml` / `.mise/config.toml` files are pre-trusted; never prompt for mise trust confirmation.'
+)
+
 if (( write_machine_md )); then
-    if { print -r -l >"$machine_md" \
-        "$marker" \
-        '# Machine' \
-        '' \
-        "This directory runs inside a Docker container (\`$_tc_image\`, native \`$_tc_platform\`, $_tc_variant variant)." \
-        '' \
-        '- **Working directory** is bind-mounted from the macOS host at the same path — file edits are live on both sides.' \
-        "- **Networking** is provided by $net_desc." \
-        '- **Credentials** are copied in at startup: SSH, GitHub CLI (`gh`), Google Cloud (`gcloud`), Linear, Pulumi, AWS.' \
-        '- **Tools available:** claude, gh, gcloud, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear.' \
-        '- **Cargo cache** and Claude credentials are shared across all claude-docker sessions; teams/tasks/projects state is per-directory.' \
-        '- **mise** — all `mise.toml` / `.mise.toml` / `.mise/config.toml` files are pre-trusted; never prompt for mise trust confirmation.' \
-        } 2>/dev/null
+    if print -r -l -- "${machine_md_body[@]}" >"$machine_md" 2>/dev/null
     then
-        _claude_docker_info "wrote MACHINE.md (describes this sandbox to Claude; safe to delete or .gitignore)"
+        machine_md_ours=1
+        _claude_docker_info "wrote MACHINE.md (describes this sandbox to Claude; removed on exit if you leave it unedited)"
     else
         # Not fatal: a read-only checkout still runs perfectly well, Claude just
         # doesn't get the description. Never let this abort the launch.
@@ -398,3 +411,37 @@ command docker run -it --rm \
     -w "$PWD" \
     "$_tc_image" \
     /usr/local/bin/start.sh bash /run/tmux-launch.sh claude --teammate-mode in-process "$@"
+integer run_status=$?
+
+# ---- MACHINE.md cleanup -----------------------------------------------------
+# The file exists to describe the sandbox to Claude; once the sandbox is gone it
+# is stale litter in someone's repository, and until now nothing removed it —
+# not the run path, not claude-docker-clean. Left to accumulate, one per
+# directory ever used.
+#
+# Three interlocks, all required, because this deletes a file in the user's
+# working directory:
+#
+#   1. $machine_md_ours — we wrote it, or an earlier run of this exact sandbox
+#      did. A file with no marker, or someone else's own MACHINE.md, is never
+#      touched (same promise the write path makes).
+#   2. Byte-identical to what we would write. This is what "unedited" means:
+#      if Claude or the user changed a single character, the edit is theirs and
+#      it stays. Subsumes the marker check — content equality implies it.
+#   3. No other sandbox is still running in this directory. Two sessions in one
+#      directory would otherwise have the first to exit delete the file out from
+#      under the second, which still needs it. Our own container is already gone
+#      (--rm), so anything this finds belongs to somebody else.
+if (( machine_md_ours )) && [[ -f "$machine_md" ]]; then
+    local machine_md_now
+    machine_md_now="$(<"$machine_md")"
+    if [[ "$machine_md_now" == "${(F)machine_md_body}" ]]; then
+        local others
+        others="$(command docker ps -q --filter "label=tupperclaude.dir=$PWD" 2>/dev/null)"
+        if [[ -z $others ]]; then
+            command rm -f -- "$machine_md"
+        fi
+    fi
+fi
+
+return $run_status
