@@ -52,7 +52,8 @@ jobs:
           set -e
           for f in zsh/tupperclaude.zsh tupperclaude.plugin.zsh \
                    zsh/functions/* zsh/templates/*.zsh \
-                   zsh/tests/*.zsh zsh/tests/lib/*.zsh zsh/tests/fake-bin/docker; do
+                   zsh/tests/*.zsh zsh/tests/lib/*.zsh zsh/tests/fake-bin/docker zsh/tests/fake-bin/sleep \
+                   zsh/completions/_claude-docker; do
             zsh -n "$f" || { echo "zsh -n failed: $f"; exit 1; }
           done
 
