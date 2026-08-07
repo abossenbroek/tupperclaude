@@ -293,7 +293,8 @@ if [[ -S /var/run/docker.sock ]]; then
     fi
     zstyle -d ':omz:plugins:tupperclaude' docker-sock
 else
-    not_ok "docker-sock: skipped — no /var/run/docker.sock on this host to mount"
+    skip "docker-sock: the socket is mounted when the option is on" \
+         "no /var/run/docker.sock on this host (macOS CI runners have no Docker daemon)"
 fi
 
 # --- MACHINE.md ownership -----------------------------------------------------
@@ -318,15 +319,42 @@ check "MACHINE.md: a user's own file that merely mentions tupperclaude is untouc
 # A file we DID write, naming a different sandbox, must still be refreshed — or
 # a base-variant description would keep telling Claude it has no browser after
 # switching to playwright.
+# A file we DID write, naming a different sandbox, must still be refreshed — or
+# a base-variant description would keep telling Claude it has no browser after
+# switching to playwright. The refreshed file is then OURS, unedited, and the
+# sandbox has exited, so the cleanup removes it: the observable end state is no
+# file at all, and "was it refreshed first" is proved by the stale text being
+# gone rather than by the file surviving.
 print -r -- '<!-- tupperclaude: claude-code-full-arm64 base default -->' >$mmd
 print -r -- 'stale' >>$mmd
 _claude_docker_run arm64 base >/dev/null 2>&1
-mmd_now="$(command cat $mmd)"
-[[ "$mmd_now" != *stale* ]]
-check "MACHINE.md: a marked file describing a different sandbox is refreshed" $? \
+[[ ! -e $mmd ]]
+check "MACHINE.md: a marked file we refreshed is removed once the sandbox exits" $? \
+    "still present: $(command cat $mmd 2>/dev/null)"
+
+# The cleanup must not fire on a file somebody edited. Written by us (so the
+# marker matches exactly), then changed by one line — which is what Claude
+# appending a note to its own MACHINE.md looks like.
+_claude_docker_run arm64 base >/dev/null 2>&1
+[[ ! -e $mmd ]]
+check "MACHINE.md: an untouched file we wrote is removed on exit" $?
+
+_claude_docker_run arm64 base >/dev/null 2>&1
+print -r -- 'a note somebody added' >>$mmd
+_claude_docker_run arm64 base >/dev/null 2>&1
+[[ -f $mmd ]] && command grep -qF 'a note somebody added' $mmd
+check "MACHINE.md: an edited file is kept, not deleted as ours" $? \
+    "got: $(command cat $mmd 2>/dev/null)"
+
+command rm -f -- $mmd
+
+# A user's own unmarked file must survive the cleanup as well as the write.
+print -rn -- "$user_notes" >$mmd
+_claude_docker_run arm64 base >/dev/null 2>&1
+mmd_now="$(command cat $mmd 2>/dev/null)"
+[[ "$mmd_now"$'\n' == "$user_notes" ]]
+check "MACHINE.md: a user's own file survives the exit cleanup" $? \
     "got: $mmd_now"
-command grep -qE '^<!-- tupperclaude: .* -->$' $mmd
-check "MACHINE.md: the refreshed file carries a marker line" $?
 
 command rm -f -- $mmd
 
