@@ -262,6 +262,21 @@ if (( ${#reply} == 1 )); then
 else
     not_ok "build: one build record to check the aws label on" "${#reply} record(s)"
 fi
+
+# ...but ONLY for the base variant. docker/Dockerfile.playwright declares no
+# ARG INCLUDE_AWS — the AWS CLI comes from the base image, which playwright is
+# FROM'd on top of — so passing it there earns "one or more build-args were not
+# consumed" at the end of a 15-minute build, which is where a user is least
+# able to tell a cosmetic warning from a real failure.
+reset_docker_log
+command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+_claude_docker_build arm64 playwright >/dev/null 2>&1
+load_docker_log
+records_matching build INCLUDE_AWS=1
+(( ${#reply} == 0 ))
+check "build/playwright: the aws option does NOT add --build-arg INCLUDE_AWS" $? \
+    "${#reply} record(s)"
+
 zstyle -d ':omz:plugins:tupperclaude' aws
 
 # --- the playwright variant ---

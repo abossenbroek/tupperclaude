@@ -245,7 +245,12 @@ local build_status
         --build-arg "BUILD_DATE=$build_date"
         --label     "tupperclaude.aws=$aws_included"
     )
-    if _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
+    # Only the base variant's Dockerfile declares ARG INCLUDE_AWS; playwright is
+    # FROM'd on top and inherits whatever the base carries regardless of this
+    # option (see aws_included above), so passing the build-arg here would just
+    # earn a "one or more build-args were not consumed" warning at the very end
+    # of a 15-minute playwright build.
+    if [[ "$_tc_variant" == base ]] && _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
         build_args+=(--build-arg INCLUDE_AWS=1)
         _claude_docker_info "including AWS CLI v2 in the image (aws option is set)."
     fi
