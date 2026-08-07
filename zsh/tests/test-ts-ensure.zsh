@@ -286,6 +286,8 @@ reset_docker_log
 
 out="$(claude-ts-ensure "$node" 2>&1)"
 rc=$?
+(( rc == 0 ))
+check "ts-ensure/no-socket-volume: returns 0 after recreating the sidecar" $? "rc=$rc"
 
 load_docker_log
 records_matching rm -f "$node"
