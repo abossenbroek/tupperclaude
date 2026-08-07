@@ -293,7 +293,8 @@ if [[ -S /var/run/docker.sock ]]; then
     fi
     zstyle -d ':omz:plugins:tupperclaude' docker-sock
 else
-    not_ok "docker-sock: skipped — no /var/run/docker.sock on this host to mount"
+    skip "docker-sock: the socket is mounted when the option is on" \
+         "no /var/run/docker.sock on this host (macOS CI runners have no Docker daemon)"
 fi
 
 # --- MACHINE.md ownership -----------------------------------------------------

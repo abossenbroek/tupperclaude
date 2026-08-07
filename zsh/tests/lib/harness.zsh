@@ -85,6 +85,17 @@ require_fn() {
     return 1
 }
 
+# skip <description> <reason> — a test that CANNOT run here, as distinct from one
+# that ran and failed. Emits the TAP skip directive: counted, not failed.
+#
+# Only for environment the host does not provide (no docker socket, say). A
+# missing function or a missing run record is a failure: the code under test did
+# not run when it should have.
+skip() {
+    (( _tc_test_count++ ))
+    print -r -- "ok $_tc_test_count - $1 # SKIP $2"
+}
+
 test_summary() {
     print -r -- "1..$_tc_test_count"
     (( _tc_test_fail == 0 ))
