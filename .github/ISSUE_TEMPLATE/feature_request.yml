@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest a capability or a change in behaviour
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do that tupperclaude makes hard or impossible?
+        Describe the situation rather than the solution — the best fix is often
+        not the one that was asked for.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Optional. If you already have a shape in mind, describe it.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried or considered
+      description: >
+        Including workarounds that half-work. A workaround that is merely
+        awkward tells us where the real friction is.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: >
+            I understand the sandbox is an environment, not a security boundary
+            against code running inside it, and this request does not assume
+            otherwise
+          required: true
