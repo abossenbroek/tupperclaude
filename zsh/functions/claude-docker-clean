@@ -352,8 +352,9 @@ if (( do_volumes )); then
 fi
 
 # Every enumerated column is padded to the widest value actually about to be
-# printed. A fixed %-58s is overrun by real names — claude-ts-sock-claude-ts-q-
-# -Users-anton-… is well past it — and the annotation column then jitters row
+# printed. A fixed %-58s is overrun by real names — a sidecar volume carries the
+# whole mangled working-directory path, claude-ts-sock-claude-ts-q--Users-you-
+# src-some-project-…, well past it — and the annotation column then jitters row
 # to row, which is exactly the kind of noise that stops people reading a
 # destructive preview.
 integer w1=0 w2=0 w3=0
