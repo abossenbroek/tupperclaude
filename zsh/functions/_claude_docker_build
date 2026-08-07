@@ -93,8 +93,20 @@ fi
 # building it without that base image already present is the most likely user
 # mistake, so catch it loudly here rather than let docker build fail deep in a
 # multi-stage build.
-local base_image="claude-code-full-$_tc_arch"
+local base_image=''
 if [[ "$_tc_variant" == playwright ]]; then
+    # Image names belong to _claude_docker_ctx alone. Ask it in a subshell so
+    # its `typeset -g _tc_*` writes land in a throwaway scope instead of
+    # clobbering this function's own live _tc_image/_tc_variant/etc — the
+    # network option is already known good, since the top-of-function ctx call
+    # above would have failed first if it weren't, so there is nothing to clear
+    # here (compare _claude_docker_check, which calls ctx with no prior call to
+    # rely on and does clear it).
+    base_image="$(_claude_docker_ctx "$_tc_arch" base >/dev/null 2>&1 && print -r -- "$_tc_image")"
+    if [[ -z $base_image ]]; then
+        _claude_docker_err "could not resolve the base image name for $_tc_arch"
+        return 1
+    fi
     _claude_docker_check image "$base_image" || {
         _claude_docker_err "$base_image not built — build it first" "${_tc_check_fix[@]}"
         return 1
