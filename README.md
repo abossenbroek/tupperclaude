@@ -545,6 +545,11 @@ over SSH works. Other engines do not provide it — see [Known limitations](#kno
 **Git worktrees.** If the working directory is a git worktree, the main checkout is also
 mounted at its own path so git can follow the `.git` file's gitdir pointer.
 
+**Shared worktree directory.** `~/.claude/worktrees` — Claude Code's own worktree
+directory on the host — is created if missing and mounted at the same path inside the
+container, so a worktree made in the sandbox is visible on the host and the reverse. It is
+shared, not per-sandbox, and `claude-docker-clean` never touches it.
+
 ## Cleaning up
 
 `claude-docker-clean` is the teardown command, and it is **more destructive than its name
@@ -924,6 +929,10 @@ patch.
    That last line assumes the default state root. If you set [`home`](#home), remove your
    own path and its `-playwright` sibling instead — `claude-docker-doctor` prints the
    resolved state root.
+
+   `~/.claude/worktrees` is deliberately **not** removed. tupperclaude creates it if it is
+   missing and mounts it, but it belongs to Claude Code on the host and may hold worktrees
+   this plugin never made. Delete it yourself only once you have checked what is in it.
 
 4. Verify nothing was missed:
 
