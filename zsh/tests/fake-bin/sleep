@@ -1,0 +1,35 @@
+#!/usr/bin/env zsh
+# fake-bin/sleep — a sleep that a test can make cheap.
+#
+# _claude_ts_online polls once a SECOND up to its timeout, and claude-ts-ensure
+# gives it 45 seconds before declaring a sidecar dead. Testing that branch for
+# real costs 45 seconds of wall clock per case, which is most of the suite's
+# runtime for no added confidence: what those cases assert is the control flow
+# (restart, then give up, then report the sidecar's health), not the duration.
+#
+# So this shim caps the requested duration at $FAKE_SLEEP_MAX seconds when that
+# variable is set, and is an ordinary sleep otherwise. It is opt-in per test
+# file precisely because some cases DO depend on real time — test-configure.zsh
+# holds a pipe open with a real `sleep 2` and must not have it shortened, and
+# so deliberately never sets FAKE_SLEEP_MAX.
+#
+# Timing semantics are not what any assertion in this suite is about; if one
+# ever is, that test must unset FAKE_SLEEP_MAX and say why.
+
+# extendedglob: the numeric guard below uses (.<->)# to recognise "45" and
+# "0.02" alike. Without it the '#' is literal, nothing matches, and this shim
+# silently degrades into a real sleep — which looks exactly like the shim not
+# being on $PATH at all.
+emulate -L zsh
+setopt local_options extendedglob
+
+if [[ -z ${FAKE_SLEEP_MAX:-} ]]; then
+    exec /bin/sleep "$@"
+fi
+
+local want=${1:-0}
+# Numeric comparison, not string: "45" vs "0.02".
+if [[ $want == <->(.<->)# ]] && (( want > FAKE_SLEEP_MAX )); then
+    want=$FAKE_SLEEP_MAX
+fi
+exec /bin/sleep "$want"

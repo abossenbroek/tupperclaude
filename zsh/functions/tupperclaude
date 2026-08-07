@@ -10,8 +10,8 @@
 # so there is no second place for the two to drift apart.
 #
 #   tupperclaude                            version + the full command table
-#   tupperclaude build arm|amd64 [--playwright]
-#   tupperclaude run   arm|amd64 [--playwright] [claude args...]
+#   tupperclaude build arm64|amd64 [--playwright]
+#   tupperclaude run   arm64|amd64 [--playwright] [claude args...]
 #   tupperclaude doctor|configure|status|shell|clean [args...]
 
 emulate -L zsh
@@ -42,10 +42,17 @@ case $sub in
         print -r -- "        claude-docker-configure                first-run setup wizard"
         print -r -- "        claude-docker-clean                    tear down containers, images and volumes"
         print ""
-        print -r -- "Shorthands: tupperclaude build|run arm|amd64 [--playwright]"
+        print -r -- "Shorthands: tupperclaude build|run arm64|amd64 [--playwright]"
         print -r -- "            tupperclaude doctor|configure|status|shell|clean"
         print ""
-        print -r -- "Every command takes -h/--help. Start with: tupperclaude doctor"
+        # Not a table row — it is not a command you run. But it tab-completes
+        # and the README names it, so meeting it that way must not lead to a
+        # command this table never mentions.
+        print -r -- "Plumbing:   claude-ts-ensure ensures a Tailscale sidecar exists; the run"
+        print -r -- "            commands call it for you."
+        print ""
+        print -r -- "Every command takes -h/--help. --version works here, on claude-docker-doctor"
+        print -r -- "and on the four run commands. Start with: tupperclaude doctor"
         return 0
         ;;
 
@@ -64,17 +71,23 @@ case $sub in
             suffix='-playwright'
             shift
         fi
+        # arm64 is what every other surface says — `linux/arm64`, the image tag
+        # claude-code-full-arm64, doctor's table — so it has to be accepted here
+        # even though the wrapper it forwards to is named claude-docker-arm.
+        # Both spellings, in both directions, so nothing a user just read back
+        # off the screen is rejected.
         case $arch in
-            arm|amd64) ;;
+            arm|arm64) arch=arm ;;
+            amd|amd64) arch=amd64 ;;
             '')
                 _claude_docker_err "tupperclaude $sub needs an architecture" \
-                    "tupperclaude $sub arm" \
+                    "tupperclaude $sub arm64" \
                     "tupperclaude $sub amd64 --playwright"
                 return 1
                 ;;
             *)
-                _claude_docker_err "unknown architecture '$arch' (expected arm or amd64)" \
-                    "tupperclaude $sub arm"
+                _claude_docker_err "unknown architecture '$arch' (expected arm64 or amd64)" \
+                    "tupperclaude $sub arm64"
                 return 1
                 ;;
         esac
@@ -91,7 +104,7 @@ case $sub in
 
     *)
         _claude_docker_err "unknown command '$sub'" \
-            "tupperclaude build|run arm|amd64 [--playwright]" \
+            "tupperclaude build|run arm64|amd64 [--playwright]" \
             "tupperclaude doctor|configure|status|shell|clean" \
             "tupperclaude --help"
         return 1

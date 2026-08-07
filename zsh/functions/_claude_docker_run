@@ -24,10 +24,75 @@ _claude_docker_check docker-daemon || {
     _claude_docker_err "docker daemon is not reachable" "${_tc_check_fix[@]}"
     return 1
 }
-_claude_docker_check image "$_tc_image" || {
+# $_tc_build_cmd rather than letting the check map the image name back to a
+# command: ctx publishes it for exactly this reason.
+_claude_docker_check image "$_tc_image" "$_tc_build_cmd" || {
     _claude_docker_err "$_tc_check_detail" "${_tc_check_fix[@]}"
     return 1
 }
+
+# The `aws` option changes what is IN the image, not its tag, so an image built
+# before the option was flipped keeps serving every run silently. The build
+# stamps the answer it used as a label; comparing it here is what makes that
+# label more than write-only bookkeeping — without this you flip aws on, RUN
+# (rather than rebuild), and get no AWS CLI with nothing said.
+#
+# A warning, not a failure: the image works, it just isn't what the option now
+# says. And only when the label is actually present — images built before it
+# existed report nothing, and blaming them for an invisible mismatch would make
+# this noise on every launch.
+local built_aws
+built_aws="$(command docker image inspect \
+    -f '{{index .Config.Labels "tupperclaude.aws"}}' "$_tc_image" 2>/dev/null)"
+if [[ $built_aws == (true|false) ]]; then
+    integer want_aws=0
+    _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS && want_aws=1
+    integer has_aws=0
+    [[ $built_aws == true ]] && has_aws=1
+    if (( want_aws != has_aws )); then
+        # WHICH command actually fixes this differs by variant, and naming the
+        # wrong one makes the warning unactionable: the AWS CLI is installed by
+        # the base Dockerfile alone, so the playwright image inherits the base's
+        # answer (_claude_docker_build stamps its label from the base image's).
+        # Rebuilding playwright therefore re-stamps the same value and the
+        # warning returns forever. Point at the base builder instead.
+        local aws_fix="$_tc_build_cmd"
+        [[ $_tc_variant == playwright ]] \
+            && aws_fix="${_tc_build_cmd%-playwright}    # the base image decides this; playwright inherits it"
+        _claude_docker_warn "the aws option is $( (( want_aws )) && print on || print off ) but ${_tc_image} was built with aws=$built_aws — the option takes effect on the next build, not on this run" \
+            "$aws_fix"
+    fi
+fi
+
+# One container name per directory and variant, so a second run in the same
+# directory collides on --name. Checked HERE, before the sidecar work and
+# before MACHINE.md is rewritten: without this the user waits 30–45s, watches
+# their working directory get modified, and is then handed Docker's own
+# `Conflict. The container name "…" is already in use` — which names no
+# tupperclaude command, so the obvious next move is `docker rm -f`, killing the
+# live session they were trying not to disturb.
+#
+# -aq, not -q: docker reserves the name for STOPPED containers too, so checking
+# only running ones leaves the exact raw conflict this guard exists to prevent.
+# The two cases need different advice, so they are distinguished rather than
+# merged — telling someone with a live session to `docker rm` it would be worse
+# than saying nothing.
+if [[ -n "$(command docker ps -aq --filter "name=^${_tc_name}\$" 2>/dev/null)" ]]; then
+    if [[ -n "$(command docker ps -q --filter "name=^${_tc_name}\$" 2>/dev/null)" ]]; then
+        _claude_docker_err "a sandbox is already running for $PWD ($_tc_arch/$_tc_variant, container '$_tc_name')" \
+            'claude-docker-shell   # open a second shell in the running sandbox' \
+            "docker attach $_tc_name   # or reattach to its tmux session" \
+            'nothing has been changed — the running session is untouched'
+    else
+        # Sandboxes run with --rm, so a stopped one is residue from a daemon
+        # that died mid-session, not somebody's work. Naming it exactly is what
+        # keeps the fix from becoming a guessed `docker rm -f`.
+        _claude_docker_err "a stopped container is holding the name '$_tc_name', so this sandbox cannot start" \
+            "docker rm $_tc_name    # it is dead residue — sandboxes run with --rm" \
+            'then re-run this command'
+    fi
+    return 1
+fi
 
 # Deliberately NO auth-key check here. The key is consumed only when a sidecar
 # is created for the first time; an existing one restarts and reconnects from
@@ -168,8 +233,13 @@ fi
 # The marker line records which sandbox wrote the file, so a MACHINE.md left
 # behind by a base run gets refreshed rather than keep telling Claude it has no
 # browser after switching to the playwright variant. A MACHINE.md this function
-# did not write (no marker, no recognisable opening) is somebody's own document
-# and is never touched.
+# did not write is somebody's own document and is never touched.
+#
+# Ownership is decided by the SHAPE of the marker line, not by whether the word
+# "tupperclaude" appears somewhere in the file. It used to be the latter, which
+# meant a colleague's own notes that merely mentioned tupperclaude — or any file
+# containing the sentence we happen to open with — authorised overwriting a file
+# in their repo, flatly contradicting the promise made just above.
 local machine_md="$PWD/MACHINE.md"
 local marker="<!-- tupperclaude: $_tc_image $_tc_variant $_tc_network -->"
 local net_desc
@@ -179,11 +249,20 @@ else
     net_desc="plain Docker bridge networking (no Tailscale sidecar)"
 fi
 
+# Default ON — this file is announced when written and documented as safe to
+# delete. The opt-out exists because a first run otherwise mutates whatever
+# repository the user happens to be standing in, which is not a thing a
+# colleague trying the tool once should have to undo.
 integer write_machine_md=1
-if [[ -f "$machine_md" ]]; then
+_claude_docker_opt -b machine-md CLAUDE_DOCKER_MACHINE_MD 1 || write_machine_md=0
+
+if (( write_machine_md )) && [[ -f "$machine_md" ]]; then
     if command grep -qF -- "$marker" "$machine_md"; then
+        # Already describes exactly this sandbox — nothing to say.
         write_machine_md=0
-    elif ! command grep -qE 'tupperclaude|This directory runs inside a Docker container' "$machine_md"; then
+    elif ! command grep -qE '^<!-- tupperclaude: .* -->$' "$machine_md"; then
+        # Ours would carry a marker line even if it names a different sandbox;
+        # this one carries none, so it is not ours to rewrite.
         write_machine_md=0
     fi
 fi
@@ -238,7 +317,23 @@ done
 # the mount and breaking SSH agent forwarding (and therefore `git push`) inside
 # the container. Do not "fix" this into a conditional.
 mounts+=(-v /run/host-services/ssh-auth.sock:/ssh-agent)
-[[ -S /var/run/docker.sock ]] && mounts+=(-v /var/run/docker.sock:/var/run/docker.sock)
+# THE DOCKER SOCKET IS HOST-ROOT-EQUIVALENT. Anything that can talk to it can
+# start a privileged container with the host filesystem mounted, so this mount
+# means the container is NOT a security boundary against the code running in
+# it: a malicious dependency, or an agent that goes wrong, can own the machine.
+#
+# It is on by default because that is the honest description of what this tool
+# has always been — a reproducible, disposable *environment* whose isolation is
+# about not polluting the host, not about containing hostile code — and because
+# MACHINE.md advertises `docker` to Claude as an available tool. Turning it off
+# silently would break every workflow that builds or runs containers inside the
+# sandbox.
+#
+# Set `docker-sock` off to get a real boundary, at the cost of docker-in-the-
+# sandbox. The README says the same thing in the same words.
+if _claude_docker_opt -b docker-sock CLAUDE_DOCKER_DOCKER_SOCK 1; then
+    [[ -S /var/run/docker.sock ]] && mounts+=(-v /var/run/docker.sock:/var/run/docker.sock)
+fi
 
 # In a git worktree, also mount the main checkout so git can follow the .git
 # file's gitdir pointer out of the working directory.
@@ -257,6 +352,10 @@ main_repo="$(command git worktree list --porcelain 2>/dev/null \
 
 command docker run -it --rm \
     --platform "$_tc_platform" \
+    `# gid 0 so the agent user can read the bind-mounted docker socket, whose` \
+    `# group inside Docker Desktop's VM is root. It widens nothing on its own —` \
+    `# the socket mount above is what carries the privilege, and it is what the` \
+    `# docker-sock option turns off. See the comment there.` \
     --group-add 0 \
     --name "$_tc_name" \
     --label "tupperclaude.dir=$PWD" \

@@ -1,7 +1,7 @@
-#compdef tupperclaude claude-docker-arm claude-docker-amd64 claude-docker-arm-playwright claude-docker-amd64-playwright claude-docker-build-arm claude-docker-build-amd64 claude-docker-build-arm-playwright claude-docker-build-amd64-playwright claude-docker-doctor claude-docker-status claude-docker-configure claude-docker-shell claude-docker-clean
+#compdef tupperclaude claude-docker-arm claude-docker-amd64 claude-docker-arm-playwright claude-docker-amd64-playwright claude-docker-build-arm claude-docker-build-amd64 claude-docker-build-arm-playwright claude-docker-build-amd64-playwright claude-docker-doctor claude-docker-status claude-docker-configure claude-docker-shell claude-docker-clean claude-ts-ensure
 # Completion for every tupperclaude command. One file, dispatching on $service,
 # because the commands share a vocabulary (arch, variant, -h) and splitting them
-# would mean keeping fourteen files in step.
+# would mean keeping fifteen files in step.
 #
 # The build commands are named verb-first — claude-docker-build-arm-playwright,
 # not claude-docker-arm-playwright-build — so plain prefix completion on
@@ -19,6 +19,8 @@ _tupperclaude_run_wrapper() {
         local -a opts=(
             '-h:show usage for this wrapper'
             '--help:show usage for this wrapper'
+            '-v:print the tupperclaude version'
+            '--version:print the tupperclaude version'
             '--:pass every following argument through to claude'
         )
         _describe -t options 'option' opts
@@ -29,7 +31,8 @@ _tupperclaude_run_wrapper() {
 
 _tupperclaude_build_wrapper() {
     _arguments -s -S \
-        '(- *)'{-h,--help}'[show usage for this build command]'
+        '(- *)'{-h,--help}'[show usage for this build command]' \
+        '(-y --yes)'{-y,--yes}'[build without the confirmation prompt]'
 }
 
 _tupperclaude_help_only() {
@@ -37,14 +40,36 @@ _tupperclaude_help_only() {
         '(- *)'{-h,--help}'[show usage]'
 }
 
+# --version is offered only where the command actually accepts it: the entry
+# point and doctor, the two things a bug report starts from. status, shell,
+# configure and clean reject it, and completing a flag into a command that
+# errors on it is the same lie as omitting one it accepts.
+_tupperclaude_doctor() {
+    _arguments -s -S \
+        '(- *)'{-h,--help}'[show usage]' \
+        '(- *)--version[print the tupperclaude version]'
+}
+
 _tupperclaude_clean() {
     _arguments -s -S \
         '(- *)'{-h,--help}'[show usage]' \
         '(-y --yes)'{-y,--yes}'[do not ask for confirmation]' \
-        '--dry-run[print what would be removed, remove nothing]' \
-        '--force[remove resources even while sandboxes are running]' \
+        '(-n --dry-run)'{-n,--dry-run}'[print what would be removed, remove nothing]' \
+        '--force[permit -y/--yes even with something running]' \
+        '--containers[narrow to containers: stop the sandboxes, remove the claude-ts-* sidecars]' \
+        '--images[narrow to images: remove whichever of the four tags exist]' \
+        '--volumes[narrow to volumes: the claude-ts-* state and socket volumes]' \
         '--state[also remove the per-directory sandbox state]' \
         '--prune[prune dangling images afterwards]'
+}
+
+# Plumbing, not a user command — it takes three positionals and no flags, so
+# the only useful completion is a reminder of what each one is.
+_tupperclaude_ts_ensure() {
+    _arguments -s \
+        '1:sidecar container name:_message -e names "claude-ts-<slug>"' \
+        '2:tailnet hostname:_message -e hosts "hostname to register on the tailnet"' \
+        '3:state root:_files -/'
 }
 
 _tupperclaude_shell() {
@@ -56,6 +81,11 @@ _tupperclaude_shell() {
 _tupperclaude_cmd() {
     local curcontext="$curcontext" state line ret=1
     typeset -A opt_args
+
+    # arm64/amd64 only, matching every other surface, even though `arm`/`amd`
+    # are still accepted. Held in a variable because build and run take the same
+    # first argument but different tails.
+    local _tupperclaude_arches='1:architecture:((arm64\:"linux/arm64 — native on Apple Silicon" amd64\:"linux/amd64 — native on Intel, emulated on Apple Silicon"))'
 
     local -a commands=(
         'build:build an image'
@@ -79,15 +109,26 @@ _tupperclaude_cmd() {
             ;;
         args)
             case $line[1] in
-                build|run)
+                # Split, not shared: only `run` forwards a tail to claude. The
+                # build wrappers take -y/--yes and nothing else, so the
+                # claude-args fallthrough would offer them filenames their own
+                # parser rejects.
+                build)
                     _arguments -s \
-                        '1:architecture:((arm\:"linux/arm64 — native on Apple Silicon" amd64\:"linux/amd64 — native on Intel, emulated on Apple Silicon"))' \
+                        "$_tupperclaude_arches" \
+                        '2:variant:((--playwright\:"the browser-capable image"))' \
+                        '*:: :_tupperclaude_build_wrapper' && ret=0
+                    ;;
+                run)
+                    _arguments -s \
+                        "$_tupperclaude_arches" \
                         '2:variant:((--playwright\:"the browser-capable image"))' \
                         '*::claude args:_default' && ret=0
                     ;;
                 clean)     _tupperclaude_clean && ret=0 ;;
                 shell)     _tupperclaude_shell && ret=0 ;;
-                doctor|configure|status) _tupperclaude_help_only && ret=0 ;;
+                doctor)    _tupperclaude_doctor && ret=0 ;;
+                configure|status) _tupperclaude_help_only && ret=0 ;;
             esac
             ;;
     esac
@@ -111,8 +152,14 @@ case $service in
     claude-docker-shell)
         _tupperclaude_shell "$@"
         ;;
-    claude-docker-doctor|claude-docker-status|claude-docker-configure)
+    claude-docker-doctor)
+        _tupperclaude_doctor "$@"
+        ;;
+    claude-docker-status|claude-docker-configure)
         _tupperclaude_help_only "$@"
+        ;;
+    claude-ts-ensure)
+        _tupperclaude_ts_ensure "$@"
         ;;
     *)
         _default "$@"

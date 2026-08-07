@@ -18,9 +18,16 @@ emulate -L zsh
 # noksharrays: the field-splitting below assumes 1-based zsh indexing.
 setopt local_options noksharrays
 
-local usage='usage: claude-docker-status [-h|--help]'
+local usage='usage: claude-docker-status [-h|--help] [--version]'
 
 case ${1:-} in
+    # Accepted rather than rejected-with-a-pointer: `--version` on a command
+    # that has one is reflex, and an error telling you to go type a different
+    # command is a worse answer than the version number.
+    --version)
+        print -r -- "tupperclaude ${TUPPERCLAUDE_VERSION:-unknown}"
+        return 0
+        ;;
     -h|--help)
         print -r -l -- \
             "$usage" \
@@ -32,7 +39,8 @@ case ${1:-} in
             'Then list the Tailscale sidecars that have no running sandbox — the' \
             'containers claude-docker-clean would remove.' \
             '' \
-            '  -h, --help   show this help' \
+            '  -h, --help     show this help' \
+            '      --version  print the tupperclaude version and exit' \
             '' \
             'See also: claude-docker-doctor (prerequisites),' \
             '          claude-docker-shell (get into the sandbox for this directory).'
@@ -114,17 +122,26 @@ else
             tailnet="n/a"
         fi
 
-        rows+=("$dir"$'\t'"$arch"$'\t'"$variant"$'\t'"$uptime"$'\t'"$tailnet")
+        # ${(D)dir} abbreviates $HOME to ~. Absolute project paths are what
+        # pushed this table well past 80 columns and wrapped every row; the
+        # abbreviated form is still pasteable, since ~ expands.
+        rows+=("${(D)dir}"$'\t'"$arch"$'\t'"$variant"$'\t'"$uptime"$'\t'"$tailnet")
     done <<<"$ps_out"
 
     print -r -l -- "${rows[@]}" | command column -t -s $'\t'
+
+    # The table answers "what is running" but not "how do I get in" — and
+    # claude-docker-shell only ever acts on the CURRENT directory, which is not
+    # something the table itself can convey.
+    print -r -- ""
+    print -r -- "To get into one:  cd <directory> && claude-docker-shell"
 fi
 
 # --- sidecars with no running sandbox ----------------------------------------
 
 [[ -z "$base_prefix" ]] && return 0
 
-local -a idle
+local -a idle notes
 local name state rest flag
 while IFS=$'\t' read -r name state; do
     [[ -z "$name" ]] && continue
@@ -142,16 +159,34 @@ while IFS=$'\t' read -r name state; do
     else
         rest=${rest#$base_prefix}
     fi
+    # `<- RUNNING` is borrowed verbatim from claude-docker-clean's preview, and
+    # deliberately so: the two commands describe the same containers, and a user
+    # who sees a sidecar marked one way here and another way there has to guess
+    # which command is telling the truth.
+    notes=()
+    [[ $state == Up* ]] && notes+=(RUNNING)
+    [[ $rest == -* ]] || notes+=('legacy fish sidecar')
     flag=''
-    [[ $rest == -* ]] || flag='<- legacy fish sidecar, may be in use'
+    (( ${#notes} )) && flag="<- ${(j:, :)notes}"
 
     idle+=("  $name"$'\t'"[$state]"$'\t'"$flag")
 done <<<"$(command docker ps -a --filter "name=^$base_prefix" --format '{{.Names}}'$'\t''{{.Status}}')"
 
 if (( ${#idle} )); then
     print -r -- ""
-    print -r -- "Sidecars with no running sandbox (removable with claude-docker-clean):"
+    # "no LABELLED sandbox", not "removable". The heading used to assert
+    # removability and the rows retracted it two columns later — and this list
+    # is where people look FIRST, before claude-docker-clean's own preview. A
+    # sidecar here has no sandbox that THIS plugin labelled, which is not the
+    # same as no sandbox: a fish-launched session runs in its sidecar's network
+    # namespace, carries no tupperclaude.arch label, and dies with it.
+    print -r -- "Sidecars with no LABELLED sandbox:"
     print -r -l -- "${idle[@]}" | command column -t -s $'\t'
+    print -r -- ""
+    print -r -- "  claude-docker-clean removes these. Any row above marked RUNNING or"
+    print -r -- "  'legacy fish sidecar' may still be carrying a live session that this"
+    print -r -- "  table cannot see — clean warns and makes you type 'yes' for those."
+    print -r -- "  docker logs <name>    # check before removing one"
 fi
 
 return 0

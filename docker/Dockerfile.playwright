@@ -8,9 +8,9 @@
 # the A/B experiment showed the hard part was never Playwright — `playwright
 # install --with-deps chromium` is one step and resolves cleanly on Ubuntu 25.10
 # — it was reproducing Claude's sandbox base. FROM claude-code-full guarantees
-# feature parity and keeps inheriting upstream base maintenance. The full
-# reconstruction (Claude on the Playwright base) is preserved in
-# Dockerfile.claude-on-pw for reference.
+# feature parity and keeps inheriting upstream base maintenance. The losing
+# arm of that experiment (Claude reconstructed on the Playwright base) was not
+# kept — it is recorded here only so nobody repeats it.
 #
 # SUPPLY CHAIN — read this before assuming the base image's discipline carries
 # over. It does not, and the difference is deliberate. The base Dockerfile pins
@@ -43,7 +43,7 @@
 # BASE_IMAGE must be declared before FROM (ARGs used by FROM are resolved in an
 # outer scope that only sees pre-FROM ARGs) — the default here is only a
 # fallback for a manual build; claude-docker-build-arm-playwright /
-# claude-docker-amd-playwright-build always pass
+# claude-docker-build-amd64-playwright always pass
 # --build-arg BASE_IMAGE=claude-code-full-<arch> explicitly.
 ARG BASE_IMAGE=claude-code-full-arm64
 FROM ${BASE_IMAGE}

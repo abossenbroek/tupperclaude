@@ -29,6 +29,11 @@ setopt local_options noksharrays nonomatch
 local arg
 for arg in "$@"; do
     case $arg in
+        # Accepted, not rejected-with-a-pointer: see claude-docker-status.
+        --version)
+            print -r -- "tupperclaude ${TUPPERCLAUDE_VERSION:-unknown}"
+            return 0
+            ;;
         -h|--help)
             print -r -- 'claude-docker-configure — first-run setup wizard'
             print -r -- ''
@@ -40,11 +45,12 @@ for arg in "$@"; do
             print -r -- 'options by hand — see zsh/templates/tupperclaude.zsh for the full list.'
             print -r -- ''
             print -r -- 'Options:'
-            print -r -- '  -h, --help    show this help and exit'
+            print -r -- '  -h, --help     show this help and exit'
+            print -r -- '      --version  print the tupperclaude version and exit'
             return 0
             ;;
         *)
-            _claude_docker_err "unknown argument '$arg'" 'usage: claude-docker-configure [-h|--help]'
+            _claude_docker_err "unknown argument '$arg'" 'usage: claude-docker-configure [-h|--help] [--version]'
             return 1
             ;;
     esac
@@ -71,20 +77,33 @@ print ""
 # Auth-key and image checks come after we know what the user wants.
 print "Checking prerequisites..."
 local -a pf_label pf_what
-pf_label=(docker-bin docker-daemon claude-json ssh-agent)
-pf_what=(docker-bin docker-daemon claude-json ssh-agent)
+# jq is in this list for the same reason doctor checks it: it is a hard runtime
+# dependency, not an optional nicety. Without it the wizard printed all-ok and
+# the user's very first claude-docker-arm died inside claude-ts-ensure's jq
+# pipeline — a failure as far from its cause as this wizard can produce.
+pf_label=(docker-bin docker-daemon jq claude-json ssh-agent)
+pf_what=(docker-bin docker-daemon jq claude-json ssh-agent)
 
 local i
+# Computed, not hardcoded, exactly as claude-docker-doctor does it: the widest
+# label here is `docker-daemon` at 13 characters, so the %-12s this used to
+# carry pushed one row out of line on the first screen a new user ever sees —
+# and adding a label would silently do it again.
+local pf_width=0
+for (( i = 1; i <= $#pf_label; i++ )); do
+    (( ${#pf_label[i]} > pf_width )) && pf_width=${#pf_label[i]}
+done
+
 # Declared once, outside the loop: zsh 5.9 echoes `fix=<value>` to stdout when
 # `local fix` re-declares a name that already holds a value in the same scope.
 local fix
 local pf_failed=0
 for (( i = 1; i <= $#pf_label; i++ )); do
     if _claude_docker_check "$pf_what[i]"; then
-        printf '  %-12s ok    %s\n' "$pf_label[i]" "$_tc_check_detail"
+        printf "  %-${pf_width}s ok    %s\n" "$pf_label[i]" "$_tc_check_detail"
     else
         (( pf_failed++ ))
-        printf '  %-12s FAIL  %s\n' "$pf_label[i]" "$_tc_check_detail"
+        printf "  %-${pf_width}s FAIL  %s\n" "$pf_label[i]" "$_tc_check_detail"
         for fix in "${_tc_check_fix[@]}"; do
             printf '        %s\n' "$fix"
         done
@@ -292,8 +311,46 @@ if (( pf_failed )); then
     print "Prerequisites are not satisfied yet — fix the FAIL lines above, then:"
     printf '  %-26s # re-check\n' claude-docker-doctor
     printf '  %-26s # then build\n' "$build_cmd"
-else
-    print "Next: build your image with:"
-    print -r -- "  $build_cmd"
+    return 0
 fi
-return 0
+
+print "Next: build your image with:"
+print -r -- "  $build_cmd"
+print ""
+
+# The last first-run surprise, and the docs call it exactly that. The sandbox is
+# a different machine as far as Claude Code is concerned, so the host login does
+# not come with it. Said here because this is the moment the user is looking for
+# what happens next — finding it in the README afterwards is finding it too late.
+print "After the build, your first sandbox will land in Claude Code's sign-in"
+print "prompt: the container is a separate machine, so your host login does not"
+print "carry over. The sandbox login is kept in the tupperclaude state root and"
+print "reused by later sandboxes, so it is a one-time cost."
+print ""
+
+# Line-oriented like every other question here, deliberately: `read -q` returns
+# after one keypress and leaves the newline in the buffer, which is the bug the
+# file header describes. Being the last prompt does not make that safe — the
+# leftover newline is read by whatever the user's shell does next.
+read -r "key?Run it now? [y/N]: "
+if [[ $key != (y|Y|yes|YES) ]]; then
+    print -r -- "Skipped — run $build_cmd yourself when ready."
+    return 0
+fi
+
+# The answers above are in ~/.tupperclaude.zsh but not yet in THIS shell, and
+# the build reads them (`aws` changes what goes into the image). Source the
+# file we just wrote — it already passed `zsh -n` — or the build would silently
+# use defaults and contradict the answers the user just gave.
+if ! source "$target"; then
+    _claude_docker_err "could not source $target — not running the build with stale options" \
+        "source ${target:q}" \
+        "  $build_cmd"
+    return 1
+fi
+
+# The build command owns its own cost confirmation; invoking it plainly is what
+# lets that confirmation happen. Do not pass a --yes here.
+print ""
+"$build_cmd"
+return $?

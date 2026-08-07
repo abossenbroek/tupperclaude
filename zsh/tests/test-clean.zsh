@@ -31,12 +31,20 @@ require_fn claude-docker-clean || { test_summary; return }
 # destructive_records — every `docker` invocation that would change state.
 # Sets $reply. Read-only verbs (ps, images, image inspect, volume ls, inspect,
 # info, --version) are excluded by construction.
+#
+# $reply is deliberately NOT declared local, exactly as in records_matching:
+# it has to resolve through zsh's dynamic scoping to the CALLER's `local -a
+# reply`. A `local -a reply` here (there used to be one, inside the loop)
+# shadows it for the whole function, so the closing assignment lands in the
+# shadow and the caller keeps whatever the previous records_matching left
+# behind — which made "removes nothing" assertions read a stale non-empty
+# array and, worse, made genuinely empty results indistinguishable from
+# never having been computed.
 destructive_records() {
     local -a hits=()
     local r
     local -a toks
     for r in $docker_records; do
-        local -a reply
         argv_tokens "$r"
         toks=("${reply[@]}")
         case "${toks[1]}" in
@@ -210,10 +218,22 @@ records_matching stop sx1
 (( ${#reply} == 1 ))
 check "clean: stops the labelled sandbox by container ID" $? "${#reply} record(s)"
 
-# Sidecars are removed by NAME with -f, both of them, in one call.
-records_matching rm -f claude-ts-live claude-ts-dead
+# Sidecars are removed by NAME with -f, both of them, one call EACH. Batching
+# them into a single `docker rm -f a b` is what this used to assert, and it is
+# why five sidecars of which three failed counted as one failure and named
+# none: the batch call's stderr went to /dev/null. Per-container calls are what
+# let the removal loop capture stderr, tell "already gone" from a real error,
+# and warn naming the container — the standard the rmi and volume loops already
+# held themselves to.
+records_matching rm -f claude-ts-live
 (( ${#reply} == 1 ))
-check "clean: removes both sidecars in one 'docker rm -f' by name" $? "${#reply} record(s)"
+check "clean: removes the live sidecar in its own 'docker rm -f' by name" $? "${#reply} record(s)"
+records_matching rm -f claude-ts-dead
+(( ${#reply} == 1 ))
+check "clean: removes the dead sidecar in its own 'docker rm -f' by name" $? "${#reply} record(s)"
+records_matching rm -f claude-ts-live claude-ts-dead
+(( ${#reply} == 0 ))
+check "clean: never batches sidecar removals into one call" $? "${reply[@]}"
 
 # Only the images that exist are rmi'd, one call each, and the absent ones are
 # never attempted — issuing rmi for an absent tag is what produced the old
@@ -303,5 +323,147 @@ out="$(claude-docker-clean --yes --force --state 2>&1)"
 check "clean --state: removes the per-directory state tree" $?
 [[ ! -e "$HOME/.tupperclaude.zsh" || -f "$HOME/.tupperclaude.zsh" ]]
 check "clean --state: does not touch anything outside the state root" $?
+
+# ============================================================================
+# --state must not escape the confirmation guards
+#
+# The hole this covers: --state is deliberately not a resource SELECTOR, so
+# `--volumes --state` left do_containers at 0 — and every guard in the file was
+# keyed off container work. at_risk read 0, costly read 0, --yes sailed past
+# the refusal, and the single-keypress [y/N] path rm -rf'd <state root>/
+# instances while a sandbox had those directories bind-mounted. It is the one
+# destructive class here with no rebuild path: an image is a 15-minute rebuild,
+# a session's task/team/project history is simply gone.
+# ============================================================================
+
+setup_world
+_claude_docker_ctx arm64 base || not_ok "ctx setup for the --state guard case"
+command mkdir -p "$_tc_cfg/instances/some-instance/teams"
+print -r -- 'x' >"$_tc_cfg/instances/some-instance/teams/marker"
+
+# The preview must say so before anything is confirmed.
+: >$FAKE_DOCKER_LOG
+out="$(claude-docker-clean --dry-run --state 2>&1)"
+[[ $out == *WARNING* && $out == *'no rebuild path'* ]]
+check "clean --dry-run --state: warns that a live sandbox has this bind-mounted" $? "got: $out"
+
+# setup_world has one running labelled sandbox (sandbox-x/sx1) and --volumes
+# means no container is touched — so this is exactly the combination where
+# every container-keyed guard reads zero.
+: >$FAKE_DOCKER_LOG
+out="$(claude-docker-clean --volumes --state --yes 2>&1)"
+rc=$?
+(( rc != 0 ))
+check "clean --volumes --state --yes: refuses while a sandbox is live" $? "rc=$rc" "$out"
+[[ $out == *refusing*--yes* ]]
+check "clean --volumes --state --yes: refuses in the house error style" $? "got: $out"
+[[ $out == *--state* ]]
+check "clean --volumes --state --yes: names --state as the reason" $? "got: $out"
+[[ $out == *instances* ]]
+check "clean --volumes --state --yes: names the state directory at stake" $? "got: $out"
+[[ -f "$_tc_cfg/instances/some-instance/teams/marker" ]]
+check "clean --volumes --state --yes: the refusal leaves the state on disk" $?
+
+load_docker_log
+destructive_records
+(( ${#reply} == 0 ))
+check "clean --volumes --state --yes: the refusal removes nothing at all" $? "${reply[@]}"
+
+# --force remains the one escape hatch, and even then --volumes must not have
+# grown the power to stop a container.
+: >$FAKE_DOCKER_LOG
+out="$(claude-docker-clean --volumes --state --yes --force 2>&1)"
+rc=$?
+(( rc == 0 ))
+check "clean --volumes --state --yes --force: exits 0" $? "rc=$rc" "$out"
+[[ ! -e "$_tc_cfg/instances" ]]
+check "clean --volumes --state --yes --force: --force is still the escape hatch" $?
+
+load_docker_log
+records_matching stop sx1
+(( ${#reply} == 0 ))
+check "clean --volumes --state: never stops a sandbox" $? "${reply[@]}"
+records_matching rm -f claude-ts-live
+(( ${#reply} == 0 ))
+check "clean --volumes --state: never removes a sidecar" $? "${reply[@]}"
+records_matching rmi claude-code-full-arm64
+(( ${#reply} == 0 ))
+check "clean --volumes --state: never removes an image" $? "${reply[@]}"
+
+# ============================================================================
+# --force on its own is rejected, not silently ignored
+# ============================================================================
+
+setup_world
+: >$FAKE_DOCKER_LOG
+out="$(claude-docker-clean --force 2>&1)"
+rc=$?
+(( rc != 0 ))
+check "clean --force without -y: returns non-zero" $? "rc=$rc"
+[[ $out == *'tupperclaude: error:'* && $out == *--force* && $out == *--yes* ]]
+check "clean --force without -y: says it only applies with -y" $? "got: $out"
+
+load_docker_log
+destructive_records
+(( ${#reply} == 0 ))
+check "clean --force without -y: removes nothing" $? "${reply[@]}"
+
+# ============================================================================
+# an unparseable image size must not read as "free"
+#
+# The sizes are scraped from docker's human-formatted column ("9.34GB"). When
+# that yields nothing, total_bytes stayed 0 — and the typed-`yes` interlock,
+# which keys off it, quietly downgraded four multi-hour rebuilds to a single
+# keypress. The prompt itself needs a tty and so cannot be asserted here; what
+# CAN be asserted is that the preview stops presenting the total as an upper
+# bound it no longer is.
+# ============================================================================
+
+setup_world
+export FAKE_DOCKER_IMAGE_TABLE='claude-code-full-arm64|latest|;claude-code-full-playwright-arm64|latest|'
+: >$FAKE_DOCKER_LOG
+out="$(claude-docker-clean --dry-run 2>&1)"
+[[ $out == *'size unknown'* ]]
+check "clean: an image with no reported size is shown as 'size unknown'" $? "got: $out"
+[[ $out == *'floor rather than an upper bound'* ]]
+check "clean: says the total is a floor when a size could not be parsed" $? "got: $out"
+[[ $out != *'freeing up to'* ]]
+check "clean: never claims a 'freeing up to' figure it could not measure" $? "got: $out"
+
+# ============================================================================
+# the preserved-credentials paths follow the `home` option
+#
+# These were three hardcoded ~/.config/claude-docker… strings. Under an
+# overridden home they named files the user does not have — on the one promise
+# this command makes about what it KEPT, and in the `rm` it hands over to clear
+# them. Last section in the file: it exports CLAUDE_DOCKER_HOME.
+# ============================================================================
+
+setup_world
+# Deliberately OUTSIDE $HOME. Inside it, ${(D)} would shorten the path to
+# `~/…` and the assertions could not tell a correctly-resolved root from the
+# hardcoded default, which also starts `~/`.
+local altroot="$TC_TEST_WORKDIR/relocated-state"
+export CLAUDE_DOCKER_HOME="$altroot"
+
+: >$FAKE_DOCKER_LOG
+out="$(claude-docker-clean --dry-run 2>&1)"
+[[ $out == *"$altroot/.credentials.json"* ]]
+check "clean --dry-run: preserves the credentials under the configured home" $? "got: $out"
+[[ $out == *"$altroot-playwright/.credentials.json"* ]]
+check "clean --dry-run: and the playwright root's credentials too" $? "got: $out"
+[[ $out != *'/.config/claude-docker/.credentials.json'* ]]
+check "clean --dry-run: never names the default path once home is overridden" $? "got: $out"
+
+# The done block and its `rm` suggestion must agree with the preview — a
+# copy-pasteable command pointing at a file the user does not have is worse
+# than no suggestion at all.
+out="$(claude-docker-clean --yes --force 2>&1)"
+[[ $out == *"To clear them: rm "*"$altroot/.credentials.json"* ]]
+check "clean: the 'to clear them' rm points at the configured home" $? "got: $out"
+[[ $out != *'To clear them: rm ~/.config/claude-docker/'* ]]
+check "clean: the rm suggestion is not the hardcoded default" $? "got: $out"
+
+unset CLAUDE_DOCKER_HOME
 
 test_summary

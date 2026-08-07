@@ -25,6 +25,38 @@ emulate -L zsh
 # zsh indexing.
 setopt local_options noksharrays
 
+local usage='usage: claude-ts-ensure <container-name> [tailnet-hostname] [state-root]'
+
+# Answered BEFORE the name guard below, which would otherwise reject --help as
+# an invalid container name. This function is plumbing, but it is autoloaded,
+# tab-completable and named in the README's troubleshooting section, so a user
+# who asks it what it is must get an answer rather than an error.
+case ${1:-} in
+    -h|--help)
+        print -r -l -- \
+            "$usage" \
+            '' \
+            'Plumbing. Ensure the persistent Tailscale sidecar <container-name> is' \
+            'running and genuinely online, creating it from $TS_AUTHKEY (or the' \
+            'configured 1Password reference) the first time. A claude-docker' \
+            'container then joins its network namespace and reaches the tailnet.' \
+            '' \
+            'The claude-docker-* commands call this for you — you should not need' \
+            'to. Run it by hand only to repair or inspect a sidecar.' \
+            '' \
+            '  <container-name>     sidecar container, e.g. claude-ts-myproject' \
+            '  [tailnet-hostname]   cosmetic node name in the admin console' \
+            '  [state-root]         if given, tailscale-resolv.conf is written here' \
+            '                       for the caller to mount' \
+            '' \
+            '  -h, --help           show this help' \
+            '' \
+            'See also: claude-docker-status (which sidecars exist and are online),' \
+            '          claude-docker-clean (remove idle sidecars).'
+        return 0
+        ;;
+esac
+
 local ts_name="${1:-}"
 local ts_host_in="${2:-}"
 local state_root="${3:-}"
@@ -106,13 +138,48 @@ else
     # for a missing/unresolvable key lives in one place.
     local authkey="${TS_AUTHKEY:-}"
     if [[ -z "$authkey" ]]; then
-        if ! _claude_docker_check authkey; then
+        # "$ts_name" scopes the check to the node we are about to create. Asked
+        # without it, the predicate passes as soon as EITHER variant's sidecar
+        # exists — so a healthy base sidecar would vouch for a playwright one
+        # that cannot be created, and we would create it with an empty key.
+        if ! _claude_docker_check authkey "$ts_name"; then
             _claude_docker_err "$_tc_check_detail" "${_tc_check_fix[@]}"
             return 1
         fi
         local ref
         ref="$(_claude_docker_opt op-ref CLAUDE_DOCKER_OP_TS_REF '')"
         authkey="$(command op read "$ref" 2>/dev/null)"
+
+        # This is a SECOND, independent `op read` — the check above did its own
+        # and its success does not carry over: 1Password can re-lock, or a Touch
+        # ID prompt go unanswered, between the two calls. Unchecked,
+        # `docker run -e TS_AUTHKEY=""` succeeds and creates a node that can
+        # never authenticate: the user waits the full 45s for a "did not come
+        # online" that blames the tailnet, and the broken container is left
+        # behind holding --restart unless-stopped, so it comes straight back.
+        #
+        # The two empty cases get different messages because they have nothing
+        # in common. Blaming 1Password when no reference was ever configured
+        # sends the user to debug a tool they are not using — and `op read ''`
+        # as the suggested fix is not even a runnable command.
+        if [[ -z "$authkey" ]]; then
+            if [[ -z "$ref" ]]; then
+                # Belt and braces: with "$ts_name" passed above, the check
+                # already fails this case (no ref, and the node we are creating
+                # cannot exist — we are in the branch that establishes it does
+                # not). Kept because the cost is three lines and the failure it
+                # prevents is a permanently unauthenticated container.
+                _claude_docker_err "no Tailscale auth key configured — not creating sidecar '$ts_name'" \
+                    "export TS_AUTHKEY='tskey-auth-...'" \
+                    "zstyle ':omz:plugins:tupperclaude' op-ref 'op://Private/Tailscale/authkey'" \
+                    'mint a reusable, tagged key: https://login.tailscale.com/admin/settings/keys'
+            else
+                _claude_docker_err "1Password returned an empty auth key for '$ref' — not creating sidecar '$ts_name', which could never authenticate" \
+                    "op read '$ref'    # shows the underlying error" \
+                    "export TS_AUTHKEY='tskey-auth-...'    # or supply the key directly"
+            fi
+            return 1
+        fi
     fi
 
     # The tailnet hostname is cosmetic (the netns join uses the container name,

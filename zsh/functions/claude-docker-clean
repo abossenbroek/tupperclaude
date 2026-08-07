@@ -1,5 +1,7 @@
 #!/usr/bin/env zsh
-# claude-docker-clean [-n|--dry-run] [-y|--yes] [--force] [--state] [--prune] [-h|--help]
+# claude-docker-clean [-n|--dry-run] [-y|--yes] [--force]
+#                     [--containers] [--images] [--volumes] [--state] [--prune]
+#                     [-h|--help]
 #
 # Tear down tupperclaude-managed Docker resources: stop labelled sandboxes,
 # remove the Tailscale sidecars and their state/socket volumes, and remove
@@ -8,25 +10,41 @@
 # enumerated and priced first, and nothing happens without confirmation.
 #
 # The preview is the point of this command. It must never overstate what is
-# safe: the `claude-ts-` sidecars include the legacy `claude-ts-q-*` nodes
-# created by the older fish functions, which are frequently UP and carrying
-# live sessions. Those sessions run inside the sidecar's network namespace,
-# so removing an UP sidecar kills the session using it even though the session
-# container itself carries no `tupperclaude.arch` label and is therefore
-# invisible to the sandbox filter. That case gets a loud warning, blocks
-# `--yes` unless `--force` is also given, and upgrades the prompt from a single
-# keypress to typing `yes`.
+# safe. Two different things can be carrying a live session, and BOTH are
+# enumerated by name:
+#
+#   * labelled sandboxes (`tupperclaude.arch`) — the containers Claude actually
+#     runs in. Under `network=default` there is no sidecar at all, so these are
+#     the only thing standing between `--yes` and three dead sessions.
+#   * `claude-ts-` sidecars, including the legacy `claude-ts-q-*` nodes created
+#     by the older fish functions. A session runs inside its sidecar's network
+#     namespace and dies the moment the sidecar is removed, even though that
+#     session's own container carries no `tupperclaude.arch` label and is
+#     therefore invisible to the sandbox filter.
+#
+# Either one being up gets a loud warning, blocks `--yes` unless `--force` is
+# also given, and upgrades the prompt from a single keypress to typing `yes`.
+#
+# By default every class of resource is removed. The three selectors narrow
+# that — `--volumes` alone reclaims the orphaned volumes without touching tens
+# of gigabytes of images or a single live session. With `--volumes` but not
+# `--containers` only ORPHANED volumes are targeted: the rest are held open by
+# sidecars that are staying, and docker would refuse to remove them anyway.
 #
 # Not removed unless explicitly asked for:
 #   --state   per-directory state under <state root>/instances (teams, tasks,
 #             projects). It accumulates forever and nothing else removes it,
-#             but it is also the only place a sandbox's own history lives.
+#             but it is also the only place a sandbox's own history lives, and
+#             the only class here with no rebuild path. With a sandbox running
+#             it arms the same --yes refusal and typed-`yes` prompt the
+#             containers do — those directories are bind-mounted into it.
 #   --prune   `docker image prune -f`, which deletes EVERY dangling image on
 #             the host — other projects' builds included, not just ours.
 #
-# Always preserved: ~/.config/claude-docker/.credentials.json and
-# ~/.config/claude-docker-playwright/.credentials.json (the Docker-only Claude
-# logins), so rebuilding doesn't force a re-login.
+# Always preserved: <state root>/.credentials.json for each root (the
+# Docker-only Claude logins), so rebuilding doesn't force a re-login. The roots
+# come from _claude_docker_ctx, so they follow the `home` option — writing
+# ~/.config/claude-docker here would be wrong for anyone who overrode it.
 
 emulate -L zsh
 # noksharrays:  the counts and indexing below assume 1-based zsh indexing.
@@ -35,6 +53,10 @@ emulate -L zsh
 setopt local_options noksharrays nonomatch extendedglob
 
 local yes=0 dry=0 force=0 do_state=0 do_prune=0 arg
+# The three resource selectors. `selected` stays 0 while none is given, and the
+# three then default to on — so the no-selector invocation removes exactly what
+# it removed before selectors existed.
+local do_containers=0 do_images=0 do_volumes=0 selected=0
 # Declared once, up here: a bare `local i` redeclared later in the same scope
 # while it still holds a value makes zsh echo "i=<value>" to stdout.
 integer i
@@ -48,14 +70,33 @@ for arg in "$@"; do
             print -r -l -- \
                 'claude-docker-clean [options] — remove tupperclaude Docker resources' \
                 '' \
-                '  -n, --dry-run  print exactly what would be removed, then exit' \
-                '  -y, --yes      skip the confirmation prompt. Refuses while a sidecar' \
-                '                 is running unless --force is given too.' \
-                '      --force    permit -y/--yes even with a sidecar running' \
-                '      --state    also remove per-directory state (teams, tasks, projects)' \
-                '      --prune    also run `docker image prune -f`, which removes EVERY' \
-                '                 dangling image on this host, not just tupperclaude'"'"'s' \
-                '  -h, --help     this message' \
+                'usage: claude-docker-clean [-n|--dry-run] [-y|--yes] [--force]' \
+                '                           [--containers] [--images] [--volumes]' \
+                '                           [--state] [--prune] [-h|--help]' \
+                '' \
+                '  -n, --dry-run     print exactly what would be removed, then exit' \
+                '  -y, --yes         skip the confirmation prompt. Refuses while a sandbox' \
+                '                    or a sidecar is running unless --force is given too.' \
+                '      --force       permit -y/--yes even with something running. Only' \
+                '                    meaningful alongside -y; on its own it is rejected' \
+                '                    rather than silently ignored.' \
+                '      --state       also remove per-directory state (teams, tasks, projects).' \
+                '                    No rebuild path, and bind-mounted into any running' \
+                '                    sandbox — so it refuses -y and demands a typed `yes`' \
+                '                    exactly as a running container does.' \
+                '      --prune       also run `docker image prune -f`, which removes EVERY' \
+                '                    dangling image on this host, not just tupperclaude'"'"'s' \
+                '  -h, --help        this message' \
+                '' \
+                'Resource selectors — give none and all three are removed, exactly as' \
+                'before; give one or more and only those are touched:' \
+                '' \
+                '      --containers  stop the labelled sandboxes, remove the claude-ts-*' \
+                '                    sidecars. This is the option that can kill a session.' \
+                '      --images      remove whichever of the four image tags exist locally' \
+                '      --volumes     remove the claude-ts-* state and socket volumes.' \
+                '                    Without --containers, only the ORPHANED ones — the' \
+                '                    rest are held open by sidecars that are staying.' \
                 '' \
                 'Removes by default: running labelled sandboxes (stopped), the claude-ts-*' \
                 'sidecar containers, their state and socket volumes, and whichever of the' \
@@ -68,16 +109,43 @@ for arg in "$@"; do
         -n|--dry-run) dry=1 ;;
         -y|--yes)     yes=1 ;;
         --force)      force=1 ;;
+        --containers) do_containers=1; selected=1 ;;
+        --images)     do_images=1;     selected=1 ;;
+        --volumes)    do_volumes=1;    selected=1 ;;
         --state)      do_state=1 ;;
         --prune)      do_prune=1 ;;
         *)
             _claude_docker_err "unknown argument '$arg'" \
-                'usage: claude-docker-clean [-n|--dry-run] [-y|--yes] [--force] [--state] [--prune]' \
+                'usage: claude-docker-clean [-n|--dry-run] [-y|--yes] [--force]' \
+                '                           [--containers] [--images] [--volumes]' \
+                '                           [--state] [--prune]' \
                 'claude-docker-clean --help'
             return 1
             ;;
     esac
 done
+
+# --force exists solely to unblock -y/--yes. Accepting it on its own was worse
+# than useless: it silently did nothing while reading, to whoever typed it,
+# like a safety had been taken off — the one misreading this command cannot
+# afford. Rejected rather than ignored, because a no-op flag teaches the wrong
+# model of what the guards are.
+if (( force && ! yes )); then
+    _claude_docker_err "--force only has an effect together with -y/--yes; on its own it changes nothing" \
+        'claude-docker-clean --dry-run        # see the plan, change nothing' \
+        'claude-docker-clean                  # prompt interactively' \
+        'claude-docker-clean --yes --force    # skip the prompt even with sessions live'
+    return 1
+fi
+
+# --state and --prune are deliberately NOT selectors: they were always additive
+# opt-ins on top of the default sweep, and making them narrow it would silently
+# change what `claude-docker-clean --state` removes.
+if (( ! selected )); then
+    do_containers=1
+    do_images=1
+    do_volumes=1
+fi
 
 # Without a daemon every enumeration below returns empty, and an empty
 # enumeration reads exactly like "there is nothing to clean". Fail loudly
@@ -96,14 +164,55 @@ done
 # Image tags and state roots come from _claude_docker_ctx, never from a
 # hand-written list: it is the single source of truth for the variant matrix,
 # and a hardcoded copy here would silently rot the day a variant is added.
+#
+# Asked in a subshell with the `network` option CLEARED, which is the idiom
+# claude-docker-doctor and claude-docker-status already use. An image tag and a
+# state root do not depend on the network mode at all, but ctx validates the
+# mode before it returns anything — so a typo like `network tailscle` used to
+# abort clean outright. That made the command you reach for to recover disk
+# after a bad config the one command disabled BY that bad config, while its two
+# neighbours rendered normally. The subshell also keeps ctx's globals out of
+# this function's scope.
 local -a images=() state_roots=()
-local a v
-for a in arm64 amd64; do
-    for v in base playwright; do
-        _claude_docker_ctx "$a" "$v" || return 1
-        (( ${images[(Ie)$_tc_image]} ))     || images+=("$_tc_image")
-        (( ${state_roots[(Ie)$_tc_cfg]} ))  || state_roots+=("$_tc_cfg")
+local ctx_out ctx_image ctx_cfg
+ctx_out="$(
+    zstyle -d ':omz:plugins:tupperclaude' network
+    unset CLAUDE_DOCKER_NETWORK
+    local a v
+    for a in arm64 amd64; do
+        for v in base playwright; do
+            _claude_docker_ctx "$a" "$v" >/dev/null 2>&1 \
+                && print -r -- "$_tc_image"$'\t'"$_tc_cfg"
+        done
     done
+)"
+while IFS=$'\t' read -r ctx_image ctx_cfg; do
+    [[ -z $ctx_image ]] && continue
+    (( ${images[(Ie)$ctx_image]} ))    || images+=("$ctx_image")
+    (( ${state_roots[(Ie)$ctx_cfg]} )) || state_roots+=("$ctx_cfg")
+done <<<"$ctx_out"
+
+# Silencing ctx above must not turn a real failure into a quiet, empty plan —
+# that is the same "reassuring, wrong zero" the daemon check exists to prevent.
+# If the matrix could not be resolved at all, something is broken that no
+# amount of enumeration below will reveal.
+if (( ! ${#images} || ! ${#state_roots} )); then
+    _claude_docker_err "could not resolve the image tags and state roots to clean" \
+        'claude-docker-doctor    # what is misconfigured'
+    return 1
+fi
+
+# The credentials this command promises never to touch, resolved from the very
+# same roots. These used to be three hardcoded `~/.config/claude-docker…`
+# strings, which made the one promise about what was KEPT the only lines in the
+# output that went stale the moment `home` was overridden — naming files the
+# user does not have, and handing them an `rm` pointing at the wrong path.
+# _claude_docker_run mounts "$_tc_cfg/.credentials.json"; this is that path.
+local -a creds=() creds_rm=()
+local cr
+for cr in "${state_roots[@]}"; do
+    creds+=("${(D)cr}/.credentials.json")
+    creds_rm+=("${(q)cr}/.credentials.json")
 done
 
 # Sizes, and the other tags of the same repositories. `docker rmi <name>` only
@@ -114,6 +223,7 @@ img_lines=(${(f)"$(command docker images --format '{{.Repository}}|{{.Tag}}|{{.S
 
 local -a present=() present_size=() absent=() other_tags=()
 local -F total_bytes=0
+local -i size_unknown=0
 local line repo tag size img
 for img in "${images[@]}"; do
     # Presence comes from the house predicate, not from parsing the table
@@ -150,6 +260,12 @@ for img in "${images[@]}"; do
             tb)   mult=1000000000000 ;;
         esac
         (( total_bytes += match[1] * mult ))
+    else
+        # An image we are about to remove whose cost we could not measure.
+        # "I could not measure it" is not evidence that it is cheap, and the
+        # typed-`yes` upgrade below keys off the total — so record the gap
+        # rather than let an unparseable size quietly downgrade the interlock.
+        size_unknown=1
     fi
 done
 
@@ -162,9 +278,22 @@ else
     printf -v total_h '%.0f bytes' $total_bytes
 fi
 
-local -a sandboxes=()
-sandboxes=(${(f)"$(command docker ps -q --filter label=tupperclaude.arch)"})
-sandboxes=(${sandboxes:#})
+# The sandboxes, by ID *and* by description. A bare count here was the whole
+# defect: "stop 0 labelled sandbox container(s)" printed directly above a
+# warning that two live sessions were about to die read as reassurance. Same
+# four columns claude-docker-status shows, from the same labels, so the row you
+# recognise there is the row you see here.
+local -a sandboxes=() sb_dir=() sb_arch=() sb_variant=() sb_uptime=()
+local sb_fmt='{{.ID}}'$'\t''{{.Label "tupperclaude.dir"}}'$'\t''{{.Label "tupperclaude.arch"}}'$'\t''{{.Label "tupperclaude.variant"}}'$'\t''{{.RunningFor}}'
+local sb_id sb_d sb_a sb_v sb_u
+while IFS=$'\t' read -r sb_id sb_d sb_a sb_v sb_u; do
+    [[ -z $sb_id ]] && continue
+    sandboxes+=("$sb_id")
+    sb_dir+=("${sb_d:-<no tupperclaude.dir label>}")
+    sb_arch+=("${sb_a:-?}")
+    sb_variant+=("${sb_v:-?}")
+    sb_uptime+=("${sb_u:-unknown}")
+done <<<"$(command docker ps --filter label=tupperclaude.arch --format "$sb_fmt")"
 
 # Two calls rather than one `{{.State}}` template: -a lists every sidecar
 # (stopped ones need cleaning up too) and the second, without -a, lists only
@@ -211,28 +340,82 @@ for vol in "${volumes[@]}"; do
     fi
 done
 
-_claude_docker_info "this will:"
-print -r -- "  stop ${#sandboxes} labelled sandbox container(s)"
-
-if (( ${#sidecars} )); then
-    print -r -- "  remove ${#sidecars} sidecar container(s):"
-    for line in "${sidecar_lines[@]}"; do
-        if (( ${running[(Ie)${line%%|*}]} )); then
-            printf '      %-58s [%s]  <- RUNNING\n' "${line%%|*}" "${line#*|}"
-        else
-            printf '      %-58s [%s]\n' "${line%%|*}" "${line#*|}"
-        fi
-    done
-    if (( ${#running} )); then
-        print -r -- "  WARNING: ${#running} sidecar(s) above are UP and may carry live Claude"
-        print -r -- "           sessions — including ones started by the older fish functions,"
-        print -r -- "           which carry no label and so are NOT in the sandbox count above."
-        print -r -- "           Those sessions run inside the sidecar's network namespace and"
-        print -r -- "           die the moment it is removed."
+# Volumes without containers can only ever be the orphaned ones: the others are
+# held open by sidecars this invocation is leaving alone.
+local -a vol_targets=()
+if (( do_volumes )); then
+    if (( do_containers )); then
+        vol_targets=("${volumes[@]}")
+    else
+        vol_targets=("${orphaned[@]}")
     fi
 fi
 
-if (( ${#present} )); then
+# Every enumerated column is padded to the widest value actually about to be
+# printed. A fixed %-58s is overrun by real names — claude-ts-sock-claude-ts-q-
+# -Users-anton-… is well past it — and the annotation column then jitters row
+# to row, which is exactly the kind of noise that stops people reading a
+# destructive preview.
+integer w1=0 w2=0 w3=0
+
+_claude_docker_info "this will:"
+
+if (( do_containers )); then
+    if (( ${#sandboxes} )); then
+        print -r -- "  stop ${#sandboxes} labelled sandbox container(s) — each is a LIVE Claude session:"
+        w1=0; w2=0; w3=0
+        for (( i = 1; i <= ${#sandboxes}; i++ )); do
+            (( ${#sb_dir[i]}     > w1 )) && w1=${#sb_dir[i]}
+            (( ${#sb_arch[i]}    > w2 )) && w2=${#sb_arch[i]}
+            (( ${#sb_variant[i]} > w3 )) && w3=${#sb_variant[i]}
+        done
+        for (( i = 1; i <= ${#sandboxes}; i++ )); do
+            printf '      %-*s  %-*s  %-*s  up %s\n' \
+                $w1 "$sb_dir[i]" $w2 "$sb_arch[i]" $w3 "$sb_variant[i]" "$sb_uptime[i]"
+        done
+    else
+        # Not "0 containers, nothing at risk": a session started by the older
+        # fish functions carries no tupperclaude label at all, so this filter
+        # cannot see it. The sidecar list below is the only place it shows up.
+        print -r -- "  stop 0 labelled sandbox container(s) — none carry the tupperclaude"
+        print -r -- "      labels; unlabelled sessions, if any, appear under the sidecars below"
+    fi
+fi
+
+if (( do_containers )) && (( ${#sidecars} )); then
+    print -r -- "  remove ${#sidecars} sidecar container(s):"
+    w1=0
+    for line in "${sidecar_lines[@]}"; do
+        (( ${#${line%%|*}} > w1 )) && w1=${#${line%%|*}}
+    done
+    for line in "${sidecar_lines[@]}"; do
+        if (( ${running[(Ie)${line%%|*}]} )); then
+            printf '      %-*s  [%s]  <- RUNNING\n' $w1 "${line%%|*}" "${line#*|}"
+        else
+            printf '      %-*s  [%s]\n' $w1 "${line%%|*}" "${line#*|}"
+        fi
+    done
+fi
+
+# Only the halves that are actually up get named: "0 sandbox(es) and 2
+# sidecar(s) are UP" invites the reader to average the two into "probably fine".
+local -a up=() up_named=()
+(( ${#sandboxes} )) && up+=("${#sandboxes} sandbox(es)")
+(( ${#running} ))   && up+=("${#running} sidecar(s)")
+# The same phrase with the names in it, for the --yes refusal. A count is a
+# number; the directory a session is running in is the thing a user recognises
+# as their own work, and the refusal is the last place to show it to them.
+(( ${#sandboxes} )) && up_named+=("${#sandboxes} sandbox(es) (${(j:, :)sb_dir})")
+(( ${#running} ))   && up_named+=("${#running} sidecar(s) (${(j:, :)running})")
+if (( do_containers )) && (( ${#up} )); then
+    print -r -- "  WARNING: ${(j: and :)up} above are UP and may carry live Claude"
+    print -r -- "           sessions. Stopping a sandbox ends the session running in it."
+    print -r -- "           Sessions started by the older fish functions run inside their"
+    print -r -- "           sidecar's network namespace, carry no label, are NOT in the"
+    print -r -- "           sandbox list above, and die the moment it is removed."
+fi
+
+if (( do_images )) && (( ${#present} )); then
     # "up to": the tags are built FROM one another and share layers, so the sum
     # is an upper bound on what the disk actually gets back. If docker reported
     # no size at all, say nothing rather than print a confident "0 bytes".
@@ -241,19 +424,36 @@ if (( ${#present} )); then
     else
         print -r -- "  remove ${#present} image tag(s) (each rebuild takes ~15 min):"
     fi
-    for (( i = 1; i <= ${#present}; i++ )); do
-        printf '      %-42s %s\n' "$present[i]" "$present_size[i]"
+    w1=0
+    for img in "${present[@]}"; do
+        (( ${#img} > w1 )) && w1=${#img}
     done
+    for (( i = 1; i <= ${#present}; i++ )); do
+        printf '      %-*s  %s\n' $w1 "$present[i]" "$present_size[i]"
+    done
+    if (( size_unknown )); then
+        print -r -- "      docker reported no usable size for at least one tag above, so any"
+        print -r -- "      total shown is a floor rather than an upper bound."
+    fi
 fi
-(( ${#absent} )) && print -r -- "    not present, will skip: ${(j:, :)absent}"
+(( do_images )) && (( ${#absent} )) && print -r -- "    not present, will skip: ${(j:, :)absent}"
 
-if (( ${#volumes} )); then
-    print -r -- "  remove ${#volumes} sidecar volume(s) — ${#in_use} in use by the sidecars above, ${#orphaned} orphaned:"
-    for vol in "${volumes[@]}"; do
+if (( ${#vol_targets} )); then
+    if (( do_containers )); then
+        print -r -- "  remove ${#vol_targets} sidecar volume(s) — ${#in_use} in use by the sidecars above, ${#orphaned} orphaned:"
+    else
+        print -r -- "  remove ${#vol_targets} orphaned sidecar volume(s) (of ${#volumes}; the other ${#in_use} are"
+        print -r -- "      held open by sidecars that are staying):"
+    fi
+    w1=0
+    for vol in "${vol_targets[@]}"; do
+        (( ${#vol} > w1 )) && w1=${#vol}
+    done
+    for vol in "${vol_targets[@]}"; do
         if (( ${in_use[(Ie)$vol]} )); then
-            printf '      %-58s in use\n' "$vol"
+            printf '      %-*s  in use\n' $w1 "$vol"
         else
-            printf '      %-58s orphaned\n' "$vol"
+            printf '      %-*s  orphaned\n' $w1 "$vol"
         fi
     done
 fi
@@ -263,6 +463,11 @@ if (( do_state )) && (( ${#state_dirs} )); then
     for line in "${state_desc[@]}"; do
         print -r -- "      $line"
     done
+    if (( ${#sandboxes} )); then
+        print -r -- "  WARNING: ${#sandboxes} sandbox(es) are live and have this state bind-mounted."
+        print -r -- "           This is the one thing here with no rebuild path — an image is"
+        print -r -- "           15 minutes, a session's task/team/project history is simply gone."
+    fi
 fi
 
 if (( do_prune )); then
@@ -272,8 +477,23 @@ fi
 
 print -r -- ""
 print -r -- "Preserved (not touched):"
-print -r -- "  ~/.config/claude-docker/.credentials.json"
-print -r -- "  ~/.config/claude-docker-playwright/.credentials.json"
+for line in "${creds[@]}"; do
+    print -r -- "  $line"
+done
+# Whatever a selector excluded is named here rather than simply omitted: a
+# resource that silently vanishes from the plan is indistinguishable from one
+# that does not exist.
+if (( selected )); then
+    (( ! do_containers )) && print -r -- \
+        "  ${#sandboxes} running sandbox(es) and ${#sidecars} sidecar(s) — pass --containers to remove those"
+    (( ! do_images )) && print -r -- \
+        "  ${#present} image tag(s) — pass --images to remove those"
+    if (( ! do_volumes )); then
+        print -r -- "  ${#volumes} sidecar volume(s) — pass --volumes to remove those"
+    elif (( ! do_containers && ${#in_use} )); then
+        print -r -- "  ${#in_use} sidecar volume(s) still in use — pass --containers too to remove those"
+    fi
+fi
 if (( ! do_state )); then
     if (( ${#state_dirs} )); then
         print -r -- "  per-directory state (teams, tasks, projects) — pass --state to remove:"
@@ -300,17 +520,43 @@ fi
 
 # ---- confirmation ---------------------------------------------------------
 
+# What this invocation can actually kill. Both halves matter and for a long
+# time only the second one was consulted: under `network=default` there is no
+# sidecar at all, so ${#running} is 0 while three labelled sandboxes carry three
+# live sessions — and `--yes` sailed straight past into `docker stop`.
+local -i at_risk=0
+(( do_containers )) && at_risk=$(( ${#sandboxes} + ${#running} ))
+
+# --state is destructive in its own right and used to escape all three of the
+# protections above: it is not a selector, so `--volumes --state` left
+# do_containers at 0, at_risk at 0, and took the single-keypress path straight
+# into `rm -rf <state root>/instances` — directories bind-mounted into sandboxes
+# that are still running. It is also the ONLY class here with no rebuild path:
+# an image is 15 minutes, a session's task/team/project history is just gone.
+local -i state_at_risk=0
+(( do_state && ${#state_dirs} && ${#sandboxes} )) && state_at_risk=${#sandboxes}
+
 # Expensive enough to deserve a typed word rather than one keypress: a live
-# session that can be killed, or more than a gigabyte of multi-hour rebuild.
+# session that can be killed, unrecoverable history, or more than a gigabyte of
+# multi-hour rebuild.
 local -i costly=0
-(( ${#running} || total_bytes > 1000000000 )) && costly=1
+(( at_risk || state_at_risk )) && costly=1
+# size_unknown counts as expensive, not as free: the sizes are parsed out of
+# docker's human-formatted column, and when that yields nothing the old test
+# read total_bytes as 0 and dropped four multi-hour rebuilds onto the
+# single-keypress path. An unmeasured cost is not a small one.
+(( do_images && (total_bytes > 1000000000 || size_unknown) )) && costly=1
 
 if (( yes )); then
-    if (( ${#running} && ! force )); then
+    if (( (at_risk || state_at_risk) && ! force )); then
         print -r -- ""
-        _claude_docker_err "refusing --yes: ${#running} sidecar(s) are running and removing them kills any session using them" \
-            "docker ps --filter 'name=^claude-ts-'    # what is still up" \
+        local -a reasons=()
+        (( at_risk )) && reasons+=("${(j: and :)up_named} are running and stopping them kills any session using them")
+        (( state_at_risk )) && reasons+=("--state would rm -rf ${(j:, :)${(D)state_dirs}} while ${#sandboxes} sandbox(es) (${(j:, :)sb_dir}) have it bind-mounted, and that history has no rebuild path")
+        _claude_docker_err "refusing --yes: ${(j:; :)reasons}" \
+            'claude-docker-status                     # what is live right now' \
             'claude-docker-clean --dry-run            # see the full plan' \
+            'claude-docker-clean --volumes            # reclaim orphaned volumes only' \
             'claude-docker-clean --yes --force        # proceed anyway'
         return 1
     fi
@@ -353,20 +599,53 @@ fi
 local -i failures=0
 local err rc
 
-if (( ${#sandboxes} )); then
+# Per container, not one batch call. A single `docker stop a b c` swallowed
+# into >/dev/null 2>&1 counts three failures as one and names none of them —
+# and these are the two most destructive operations in the file, held to a
+# weaker standard than the rmi and volume loops right below. Same shape as
+# those: capture stderr, tell "already gone" apart from a real error, and name
+# what the resource was.
+if (( do_containers )) && (( ${#sandboxes} )); then
     _claude_docker_info "stopping sandboxes…"
-    command docker stop "${sandboxes[@]}" >/dev/null 2>&1 || (( failures++ ))
+    for (( i = 1; i <= ${#sandboxes}; i++ )); do
+        err="$(command docker stop "$sandboxes[i]" 2>&1 >/dev/null)"
+        rc=$?
+        if (( rc == 0 )); then
+            print -r -- "  stopped $sandboxes[i]  ($sb_dir[i])"
+        elif [[ $err == *'No such container'* || $err == *'No such object'* ]]; then
+            print -r -- "  already gone, skipped: $sandboxes[i]  ($sb_dir[i])"
+        else
+            (( failures++ ))
+            _claude_docker_warn "could not stop $sandboxes[i] ($sb_dir[i]): ${err:-unknown error}" \
+                "docker inspect $sandboxes[i]    # what state it is in" \
+                "docker kill $sandboxes[i]"
+        fi
+    done
 fi
 
 # Containers before images and volumes: an image or volume still referenced by
 # a container cannot be removed, and reporting that as "not present" is exactly
 # the lie this rewrite exists to kill.
-if (( ${#sidecars} )); then
+if (( do_containers )) && (( ${#sidecars} )); then
     _claude_docker_info "removing sidecars…"
-    command docker rm -f "${sidecars[@]}" >/dev/null 2>&1 || (( failures++ ))
+    local sc
+    for sc in "${sidecars[@]}"; do
+        err="$(command docker rm -f "$sc" 2>&1 >/dev/null)"
+        rc=$?
+        if (( rc == 0 )); then
+            print -r -- "  removed $sc"
+        elif [[ $err == *'No such container'* || $err == *'No such object'* ]]; then
+            print -r -- "  already gone, skipped: $sc"
+        else
+            (( failures++ ))
+            _claude_docker_warn "could not remove sidecar $sc: ${err:-unknown error}" \
+                "docker inspect $sc    # what state it is in" \
+                "docker rm -f $sc"
+        fi
+    done
 fi
 
-if (( ${#present} )); then
+if (( do_images )) && (( ${#present} )); then
     _claude_docker_info "removing images…"
     for (( i = 1; i <= ${#present}; i++ )); do
         err="$(command docker rmi "$present[i]" 2>&1 >/dev/null)"
@@ -384,9 +663,9 @@ if (( ${#present} )); then
     done
 fi
 
-if (( ${#volumes} )); then
+if (( ${#vol_targets} )); then
     _claude_docker_info "removing sidecar volumes…"
-    for vol in "${volumes[@]}"; do
+    for vol in "${vol_targets[@]}"; do
         err="$(command docker volume rm "$vol" 2>&1 >/dev/null)"
         rc=$?
         if (( rc == 0 )); then
@@ -405,6 +684,28 @@ fi
 if (( do_state )) && (( ${#state_dirs} )); then
     _claude_docker_info "removing per-directory state…"
     for root in "${state_dirs[@]}"; do
+        # A floor under the one `rm -rf` in this file. state_dirs is built from
+        # $_tc_cfg, which comes from the `home` zstyle — `zstyle ... home /`
+        # yields `rm -rf //instances`, and nothing between there and here says
+        # no. Every other destructive step is defensive to a fault; this one
+        # was taking a user-supplied path on trust.
+        #
+        # The rule is depth, counted in components. An earlier version tested
+        # `$root != $HOME/* && $root != /*/*/*`, which rejected a perfectly
+        # reasonable `home /tmp` (because /tmp/instances has only two
+        # components) while blaming it on being "too close to the filesystem
+        # root" — a message that named neither the real rule nor anything the
+        # user could act on. Two components is the honest floor: it is exactly
+        # what stops a mistyped home from aiming this at a top-level directory.
+        local -a root_parts=(${(s:/:)root})
+        root_parts=(${root_parts:#})
+        if [[ $root != /* ]] || (( ${#root_parts} < 2 )); then
+            (( failures++ ))
+            _claude_docker_warn "refusing to rm -rf '$root': a state directory must be an absolute path at least two components deep, and this one is ${#root_parts}" \
+                "zstyle ':omz:plugins:tupperclaude' home    # the state root this is derived from" \
+                "rm -rf ${(q)root}    # if you are certain, do it by hand"
+            continue
+        fi
         if command rm -rf -- "$root"; then
             print -r -- "  removed ${(D)root}"
         else
@@ -428,8 +729,9 @@ if (( failures )); then
 fi
 
 _claude_docker_info "done. Docker-only Claude credentials preserved at:"
-print -r -- "  ~/.config/claude-docker/.credentials.json"
-print -r -- "  ~/.config/claude-docker-playwright/.credentials.json"
-print -r -- "To clear them: rm ~/.config/claude-docker/.credentials.json ~/.config/claude-docker-playwright/.credentials.json"
+for line in "${creds[@]}"; do
+    print -r -- "  $line"
+done
+print -r -- "To clear them: rm ${(j: :)creds_rm}"
 print -r -- "Run claude-docker-build-arm / claude-docker-build-amd64 (and their -playwright siblings) to rebuild."
 return 0

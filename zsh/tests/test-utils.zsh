@@ -231,7 +231,45 @@ sandbox-b|bbb222|running|Up 5 minutes|5 minutes|tupperclaude.dir=$dir_b,tuppercl
     [[ $out == *OFFLINE* ]]
     check "status: reports OFFLINE for a running-but-disconnected sidecar" $? "got: $out"
 
+    # --- the idle-sidecar section must not contradict itself ---
+    #
+    # This section used to be headed "removable with claude-docker-clean" while
+    # individual rows said "may be in use" two columns later. On a real machine
+    # it listed two sidecars with 21+ hours of live work under a heading that
+    # asserted they were safe to delete. status is where people look FIRST —
+    # before clean's own preview, which gets this right — so status was the
+    # weaker of the two commands on precisely the case that destroys work.
+    #
+    # A sidecar with no LABELLED sandbox is not a sidecar with no sandbox: a
+    # fish-launched session runs inside its sidecar's network namespace, carries
+    # no tupperclaude.arch label, and dies when the sidecar goes.
+    export FAKE_DOCKER_PS_DB='claude-ts-q-legacy|q1|running|Up 21 hours|21 hours|;claude-ts--tmp-gone|g1|exited|Exited (0) 2 days ago|2 days|'
+    unset FAKE_DOCKER_CONTAINERS
+    out="$(claude-docker-status 2>&1)"
+
+    [[ $out != *'removable with claude-docker-clean'* ]]
+    check "status: the idle-sidecar heading no longer asserts removability" $? "got: $out"
+    [[ $out == *'no LABELLED sandbox'* ]]
+    check "status: the heading says these have no LABELLED sandbox" $? "got: $out"
+
+    local live_row dead_row
+    live_row="$(print -r -- "$out" | command grep -- claude-ts-q-legacy)"
+    dead_row="$(print -r -- "$out" | command grep -- claude-ts--tmp-gone)"
+
+    [[ $live_row == *RUNNING* ]]
+    check "status: a running idle sidecar is marked RUNNING, as clean marks it" $? "got: $live_row"
+    [[ $live_row == *'legacy fish sidecar'* ]]
+    check "status: a legacy-scheme sidecar is still flagged as such" $? "got: $live_row"
+    [[ $dead_row != *RUNNING* ]]
+    check "status: a stopped sidecar is NOT marked RUNNING" $? "got: $dead_row"
+
     unset FAKE_DOCKER_PS_DB FAKE_DOCKER_CONTAINERS FAKE_DOCKER_TS_ONLINE
+
+    # --- --version is answered, not rejected ---
+    out="$(claude-docker-status --version 2>&1)"
+    check "status --version: exits 0" $?
+    [[ $out == *tupperclaude* ]]
+    check "status --version: names the version" $? "got: $out"
 fi
 
 # ============================================================================

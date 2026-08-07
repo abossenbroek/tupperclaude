@@ -1,13 +1,27 @@
 # Installing tupperclaude
 
+tupperclaude is **macOS-only** and currently at version `0.1.0-dev` — a prerelease.
+Command names and options may still change.
+
 ## Requirements
 
 - macOS with **Docker Desktop** (the run commands rely on Docker Desktop's Linux VM for
   `/dev/net/tun` when using `network=tailscale`, and on its ssh-agent forwarding socket
-  at `/run/host-services/ssh-auth.sock`)
+  at `/run/host-services/ssh-auth.sock`). OrbStack and Colima run the images, but
+  neither provides that socket, so SSH agent forwarding — and therefore `git push` over
+  SSH inside the sandbox — will not work. On those engines `claude-docker-doctor` exits
+  non-zero, and `claude-docker-configure` still prints the build command but will not
+  offer to run it for you; build and run anyway, only git-over-SSH is affected. See
+  [Known limitations](README.md#known-limitations).
+- About **12 GB of free disk** before the first build — it refuses to start below that.
+  See [Build cost](README.md#build-cost).
 - `zsh`
-- `jq`, `git` (plus `sed`, `awk`, `grep`, `shasum`, `column` — all stock on macOS)
-- Claude Code installed and signed in on the host (the build reads `~/.claude.json`)
+- `jq`, `git` (plus `sed`, `awk`, `grep`, `shasum`, `column`, `du`, `df`, `mktemp` — all
+  stock on macOS)
+- Claude Code installed and signed in on the host (the build reads `~/.claude.json`).
+  Note that the **sandbox does not inherit that login** — you sign in once more inside it
+  on first run; see
+  [You sign in to Claude Code again](README.md#you-sign-in-to-claude-code-again-inside-the-sandbox).
 - A Tailscale account and a **reusable, tagged** auth key — required unless you opt out
   with `network default`. Tailscale **is** the default; see
   [Getting started](README.md#getting-started) for the no-account path.
@@ -73,12 +87,41 @@ exec zsh
 
 ```zsh
 claude-docker-configure   # interactive setup — recommended first step
-claude-docker-doctor      # verify prerequisites
-claude-docker-build-arm   # first build (Apple Silicon; use amd64-build on Intel)
+claude-docker-build-arm   # first build (Apple Silicon; claude-docker-build-amd64 on Intel)
+claude-docker-doctor      # verify everything, now that the image exists
 claude-docker-arm
 ```
 
-See [README.md](README.md) for the full command table and configuration reference.
+`claude-docker-configure` offers to run the build for you at the end, so you may not need
+to type it. Run `claude-docker-doctor` **after** the build, not before: it treats the base
+image for your architecture as a required check, so on a machine that has not built yet
+it reports a `FAIL` for it and exits non-zero — correct behaviour, but an alarming first
+command.
+
+The first build takes roughly 15 minutes, wants about 12 GB free to start, and produces a
+~9 GB image — see [Build cost](README.md#build-cost). It asks for confirmation the first
+time; `-y`/`--yes` skips that. On first launch you sign in to Claude Code again inside the
+sandbox, which keeps its own credentials — see
+[the README](README.md#you-sign-in-to-claude-code-again-inside-the-sandbox).
+
+`tupperclaude` (bare) prints the version and the full command table. Every
+`claude-docker-*` command, `claude-ts-ensure` and `tupperclaude` itself take
+`-h`/`--help`; on the run commands that help belongs to the wrapper, so use
+`claude-docker-arm -- --help` to reach `claude`'s own.
+
+See [README.md](README.md) for the full command table and configuration reference, and
+[Getting started](README.md#getting-started) for the shortest path that needs no
+Tailscale account.
+
+## Running the tests
+
+The zsh implementation has a suite that needs no Docker daemon:
+
+```zsh
+zsh zsh/tests/run-tests.zsh
+```
+
+It also runs in CI on every push and pull request. Run it before and after any patch.
 
 ## Uninstall
 
@@ -89,21 +132,46 @@ See [README.md](README.md) for the full command table and configuration referenc
    - **antigen / zplug:** remove the `bundle`/`zplug` line and remove the cached clone
      per your manager's own cache-clear command
    - **manual:** remove the `source` line from `~/.zshrc` and `rm -rf ~/.tupperclaude`
-2. Remove containers, sidecars, and state:
+2. Remove the generated configuration file **and** the line that sources it:
 
    ```zsh
-   claude-docker-clean
+   rm -f ~/.tupperclaude.zsh ~/.tupperclaude.zsh.bak-*
    ```
 
-   or manually:
+   Then delete `source ~/.tupperclaude.zsh` from `~/.zshrc`. If you leave that line
+   behind with the file gone, every new shell prints an error. (The file is written by
+   `claude-docker-configure`; see
+   [Configuration file](README.md#configuration-file).)
+
+3. Remove containers, sidecars, volumes, images and state:
+
+   ```zsh
+   claude-docker-clean --state
+   ```
+
+   Read the plan it prints before confirming — besides containers and volumes it removes
+   all four `claude-code-full-*` image tags, each a ~15 minute rebuild natively (much
+   longer for an `amd64` image cross-built on Apple Silicon). `--state` is what removes
+   the per-directory state under `~/.config/claude-docker*/instances` — or the equivalent
+   under your `home` override; nothing removes it otherwise. It does **not** remove the
+   sandbox's Claude credentials; delete
+   `~/.config/claude-docker*/.credentials.json` yourself if you want those gone. Or do it
+   manually:
 
    ```zsh
    docker rm -f $(docker ps -aq --filter label=tupperclaude.dir) 2>/dev/null
    docker ps -a --filter name=claude-ts- -q | xargs -r docker rm -f
+   docker rmi claude-code-full-arm64 claude-code-full-amd64 \
+              claude-code-full-playwright-arm64 claude-code-full-playwright-amd64
+   docker volume ls -q --filter 'name=^claude-ts-' | xargs -r docker volume rm
    rm -rf ~/.config/claude-docker ~/.config/claude-docker-playwright
    ```
 
-3. Verify nothing was missed — **both** of these should print nothing:
+   The last line assumes the default state root; with a `home` override, remove your own
+   path and its `-playwright` sibling instead (`claude-docker-doctor` prints the resolved
+   one).
+
+4. Verify nothing was missed — **both** of these should print nothing:
 
    ```zsh
    docker ps -a --filter label=tupperclaude.dir --format '{{.Names}}'   # sandboxes

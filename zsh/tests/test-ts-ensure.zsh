@@ -33,6 +33,12 @@ require_fn claude-ts-ensure || { test_summary; return }
 export TS_AUTHKEY=tskey-auth-fake
 export FAKE_DOCKER_TS_ONLINE=1
 
+# _claude_ts_online polls once a second and claude-ts-ensure gives it 45 of
+# them before giving up, so the offline cases below would cost ~90s of wall
+# clock. What they assert is control flow, not duration — see the header of
+# zsh/tests/fake-bin/sleep, which caps the wait when this is set.
+export FAKE_SLEEP_MAX=0.02
+
 # ============================================================================
 # input validation — this is a public command
 # ============================================================================
@@ -40,9 +46,11 @@ export FAKE_DOCKER_TS_ONLINE=1
 # Without the guard, `claude-ts-ensure --help` used to run `docker rm -f --help`
 # and then spend 45 seconds printing jq parse errors.
 
+# -h/--help is answered BEFORE the name guard, so it is deliberately NOT in
+# this list — see its own case below. Everything here must be rejected.
 local bad
-for bad in '' '--help' '-x' 'has space' 'semi;colon' '$(touch pwned)'; do
-    : >$FAKE_DOCKER_LOG
+for bad in '' '-x' '--nope' 'has space' 'semi;colon' '$(touch pwned)'; do
+    reset_docker_log
     err="$(claude-ts-ensure "$bad" 2>&1 1>/dev/null)"
     rc=$?
     (( rc != 0 ))
@@ -63,13 +71,31 @@ check "ts-ensure: bad input offers a pasteable example" $? "got: $err"
 [[ ! -e "$TC_TEST_WORKDIR/pwned" ]]
 check "ts-ensure: a name containing shell metacharacters is never evaluated" $?
 
+# --help must be answered, not treated as a container name. Before the guard
+# existed, `claude-ts-ensure --help` ran `docker rm -f --help` and then spent 45
+# seconds printing jq parse errors — so the assertion that matters as much as
+# the exit status is that it touches no docker at all.
+local flag
+for flag in -h --help; do
+    reset_docker_log
+    out="$(claude-ts-ensure $flag 2>&1)"
+    rc=$?
+    (( rc == 0 ))
+    check "ts-ensure $flag: exits 0" $? "rc=$rc"
+    [[ $out == *claude-ts-ensure* ]]
+    check "ts-ensure $flag: prints usage" $? "got: $out"
+    load_docker_log
+    (( ${#docker_records} == 0 ))
+    check "ts-ensure $flag: runs no docker command" $? "${docker_records[@]}"
+done
+
 # ============================================================================
 # 1. nothing exists -> create a fresh sidecar
 # ============================================================================
 
 node=claude-ts-fresh
 unset FAKE_DOCKER_CONTAINERS
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 claude-ts-ensure "$node" ts-hostname >/dev/null 2>&1
 rc=$?
 (( rc == 0 ))
@@ -121,7 +147,7 @@ for verb in start restart rm; do
 done
 
 # --- a tailnet hostname longer than the 63-byte DNS label cap ---
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 local long_host="${(l:80::x:)}"
 claude-ts-ensure claude-ts-longhost "$long_host" >/dev/null 2>&1
 load_docker_log
@@ -148,7 +174,7 @@ node=claude-ts-happy
 export FAKE_DOCKER_CONTAINERS="$node"
 export FAKE_DOCKER_RUNNING="$node"
 export FAKE_DOCKER_TS_ONLINE=1
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 
 claude-ts-ensure "$node" >/dev/null 2>&1
 rc=$?
@@ -175,7 +201,7 @@ node=claude-ts-offline
 export FAKE_DOCKER_CONTAINERS="$node"
 export FAKE_DOCKER_RUNNING="$node"
 export FAKE_DOCKER_TS_ONLINE=0
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 
 out="$(claude-ts-ensure "$node" 2>&1)"
 rc=$?
@@ -204,7 +230,7 @@ check "ts-ensure/offline: the error ends with a pasteable next step" $? "got: $o
 # The health lines from `tailscale status --json` must be surfaced — they are
 # the only thing that distinguishes "still starting" from "key expired".
 export FAKE_DOCKER_TS_HEALTH='needs login,not in map poll'
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 out="$(claude-ts-ensure "$node" 2>&1)"
 [[ $out == *'needs login'* ]]
 check "ts-ensure/offline: surfaces the sidecar's reported health" $? "got: $out"
@@ -218,7 +244,7 @@ node=claude-ts-stopped
 export FAKE_DOCKER_CONTAINERS="$node"
 export FAKE_DOCKER_RUNNING=''      # exists, not running
 export FAKE_DOCKER_TS_ONLINE=1
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 
 out="$(claude-ts-ensure "$node" 2>&1)"
 rc=$?
@@ -256,7 +282,7 @@ export FAKE_DOCKER_CONTAINERS="$node"
 export FAKE_DOCKER_RUNNING="$node"
 export FAKE_DOCKER_MOUNTS=''       # no mounts at all
 export FAKE_DOCKER_TS_ONLINE=1
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 
 out="$(claude-ts-ensure "$node" 2>&1)"
 rc=$?
@@ -281,7 +307,7 @@ check "ts-ensure/no-socket-volume: the rm precedes the re-create" $? "rm at $rm_
 
 # A sidecar that HAS the socket volume must not be recreated.
 unset FAKE_DOCKER_MOUNTS
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 claude-ts-ensure "$node" >/dev/null 2>&1
 load_docker_log
 records_matching rm
@@ -300,7 +326,7 @@ export FAKE_DOCKER_TS_ONLINE=1
 # --- omitted: no resolv.conf is written anywhere ---
 local probe="$TC_TEST_WORKDIR/state-probe"
 command rm -rf -- "$probe"
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 claude-ts-ensure "$node" ts-host >/dev/null 2>&1
 [[ ! -e "$probe" ]]
 check "ts-ensure: with no state root, nothing is written to one" $?
@@ -355,7 +381,7 @@ node=claude-ts-failrun
 unset FAKE_DOCKER_CONTAINERS
 unset FAKE_DOCKER_RUNNING
 export FAKE_DOCKER_FAIL='run'
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 claude-ts-ensure "$node" >/dev/null 2>&1
 rc=$?
 (( rc != 0 ))
@@ -376,7 +402,7 @@ zstyle -d ':omz:plugins:tupperclaude' op-ref
 
 node=claude-ts-nokey
 unset FAKE_DOCKER_CONTAINERS
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 err="$(claude-ts-ensure "$node" 2>&1 1>/dev/null)"
 rc=$?
 (( rc != 0 ))
@@ -392,10 +418,61 @@ node=claude-ts-existing-nokey
 export FAKE_DOCKER_CONTAINERS="$node"
 export FAKE_DOCKER_RUNNING=''
 export FAKE_DOCKER_TS_ONLINE=1
-: >$FAKE_DOCKER_LOG
+reset_docker_log
 claude-ts-ensure "$node" >/dev/null 2>&1
 rc=$?
 (( rc == 0 ))
 check "ts-ensure: an EXISTING sidecar starts fine with no auth key" $? "rc=$rc"
+
+# ============================================================================
+# one variant's sidecar must not vouch for the other's
+# ============================================================================
+#
+# The leniency above — "a sidecar already exists, so no key is needed" — is
+# right for doctor, whose question is "can this machine bring up a sidecar at
+# all". It is wrong for claude-ts-ensure, which is about to create ONE specific
+# node. Asked without a node, the predicate scans BOTH variants' nodes and
+# passes if either exists, so a healthy BASE sidecar used to vouch for a
+# PLAYWRIGHT one that could not be created — and it was then created with
+# TS_AUTHKEY="", a container that can never authenticate and that comes
+# straight back because it holds --restart unless-stopped.
+#
+# Nothing covered this: FAKE_DOCKER_CONTAINERS was only ever set all-or-nothing.
+
+local base_node pw_node
+base_node="$(_claude_docker_ctx arm64 base >/dev/null 2>&1 && print -r -- "$_tc_ts_node")"
+pw_node="$(_claude_docker_ctx arm64 playwright >/dev/null 2>&1 && print -r -- "$_tc_ts_node")"
+
+[[ -n $base_node && -n $pw_node && $base_node != $pw_node ]]
+check "the two variants really have distinct sidecar names" $? "base=$base_node pw=$pw_node"
+
+unset TS_AUTHKEY
+unset CLAUDE_DOCKER_OP_TS_REF
+zstyle -d ':omz:plugins:tupperclaude' op-ref
+export FAKE_DOCKER_CONTAINERS="$base_node"
+
+# The predicate itself, both ways round — this is the property, stated directly.
+_claude_docker_check authkey
+check "check authkey (no node): any existing sidecar answers doctor's question" $?
+
+_claude_docker_check authkey "$pw_node"
+(( $? != 0 ))
+check "check authkey <node>: the OTHER variant's sidecar does not vouch for it" $?
+
+_claude_docker_check authkey "$base_node"
+check "check authkey <node>: the node's own sidecar does vouch for it" $?
+
+# And end to end: creating the playwright sidecar must be refused, not attempted.
+reset_docker_log
+err="$(claude-ts-ensure "$pw_node" 2>&1 1>/dev/null)"
+rc=$?
+(( rc != 0 ))
+check "ts-ensure: refuses to create the playwright sidecar on the base one's credit" $? "rc=$rc"
+load_docker_log
+records_matching run -d
+(( ${#reply} == 0 ))
+check "ts-ensure: creates no unauthenticatable sidecar in that case" $? "${reply[@]}"
+
+unset FAKE_DOCKER_CONTAINERS
 
 test_summary

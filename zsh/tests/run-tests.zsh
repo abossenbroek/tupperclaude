@@ -62,7 +62,10 @@ for tf in $test_files; do
         exit_status=$?
     } always {
         command rm -rf -- $tmphome $tmpwork
-        command rm -f -- $logfile
+        # …and $logfile.removed, the fake docker's removal journal — it is
+        # created lazily beside the argv log (see fake-bin/docker) and would
+        # otherwise be left behind in $TMPDIR once per test file, per run.
+        command rm -f -- $logfile $logfile.removed
     }
 
     print "=== $name ==="

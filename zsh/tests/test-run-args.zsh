@@ -172,4 +172,217 @@ fi
 
 zstyle -d ':omz:plugins:tupperclaude' network
 
+# --- the aws option vs. the image that is actually there ----------------------
+#
+# `aws` changes what is IN the image, not its tag, so only a REBUILD acts on it.
+# The build stamps the answer it used as a label; the run path compares. Without
+# the comparison the label was write-only and flipping the option on, then
+# RUNNING rather than rebuilding, silently gave you an image with no AWS CLI.
+#
+# A warning, never a refusal — the image runs fine, it just isn't what the
+# option now says.
+
+_claude_docker_ctx arm64 base || exit 1
+
+# label says false, option says on -> mismatch
+export FAKE_DOCKER_IMAGE_LABELS="$_tc_image=tupperclaude.aws=false"
+zstyle ':omz:plugins:tupperclaude' aws on
+local aws_out
+aws_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+check "aws mismatch: the run still succeeds — this is a warning, not a refusal" $?
+[[ $aws_out == *aws* ]]
+check "aws mismatch: the run path notices the image disagrees with the option" $? "got: $aws_out"
+[[ $aws_out == *claude-docker-build-arm* ]]
+check "aws mismatch: the warning names the rebuild command" $? "got: $aws_out"
+
+# label agrees with the option -> silence
+export FAKE_DOCKER_IMAGE_LABELS="$_tc_image=tupperclaude.aws=true"
+aws_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+[[ $aws_out != *aws\ option* ]]
+check "aws match: no warning when the image agrees with the option" $? "got: $aws_out"
+zstyle -d ':omz:plugins:tupperclaude' aws
+
+# No label at all — an image built before the label existed. Silence is the only
+# honest answer: there is nothing to compare, and warning on every launch of a
+# perfectly good image would train the user to ignore the warning that matters.
+export FAKE_DOCKER_IMAGE_LABELS=''
+aws_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+[[ $aws_out != *aws\ option* ]]
+check "aws: an image with no label is not accused of a mismatch" $? "got: $aws_out"
+unset FAKE_DOCKER_IMAGE_LABELS
+
+# --- MACHINE.md ownership -----------------------------------------------------
+#
+# This is the one thing the run path writes into the user's repository, so who
+# owns the file has to be decided structurally. It used to be a substring match
+# on the word "tupperclaude", which meant a colleague's own notes that merely
+# MENTIONED the tool authorised overwriting them. Ownership is the marker line.
+
+# `command cat`, not zsh's $(<file): the latter is performed even under
+# `zsh -n`, so a syntax check of this file would try to open an unset path.
+local mmd="$PWD/MACHINE.md" mmd_now=''
+local -r user_notes=$'# My notes\n\nWe run this repo under tupperclaude sometimes.\n'
+
+print -rn -- "$user_notes" >$mmd
+_claude_docker_run arm64 base >/dev/null 2>&1
+mmd_now="$(command cat $mmd)"
+[[ "$mmd_now"$'\n' == "$user_notes" ]]
+check "MACHINE.md: a user's own file that merely mentions tupperclaude is untouched" $? \
+    "got: $mmd_now"
+
+# A file we DID write, naming a different sandbox, must still be refreshed — or
+# a base-variant description would keep telling Claude it has no browser after
+# switching to playwright.
+print -r -- '<!-- tupperclaude: claude-code-full-arm64 base default -->' >$mmd
+print -r -- 'stale' >>$mmd
+_claude_docker_run arm64 base >/dev/null 2>&1
+mmd_now="$(command cat $mmd)"
+[[ "$mmd_now" != *stale* ]]
+check "MACHINE.md: a marked file describing a different sandbox is refreshed" $? \
+    "got: $mmd_now"
+command grep -qE '^<!-- tupperclaude: .* -->$' $mmd
+check "MACHINE.md: the refreshed file carries a marker line" $?
+
+command rm -f -- $mmd
+
+# --- introspection flags must not start a sandbox ---------------------------
+#
+# -h/--version are what anyone types at an unfamiliar command. Passing --version
+# through to claude ran a real container: it wrote MACHINE.md into the user's
+# working directory and, under the default network=tailscale, minted a tailnet
+# node — all to answer a question about a version string. The wrappers reserve
+# it, and these assert they answer without reaching docker at all.
+
+local want_version="tupperclaude ${TUPPERCLAUDE_VERSION:-unknown}"
+local wrapper flag out
+for wrapper in claude-docker-arm claude-docker-amd64 \
+               claude-docker-arm-playwright claude-docker-amd64-playwright; do
+    require_fn $wrapper || continue
+    for flag in --version -v; do
+        reset_docker_log
+        command rm -f -- $mmd
+
+        out="$($wrapper $flag)"
+        [[ $out == "$want_version" ]]
+        check "$wrapper $flag: prints the tupperclaude version" $? \
+            "want: $want_version" "got:  $out"
+
+        load_docker_log
+        (( ${#docker_records} == 0 ))
+        check "$wrapper $flag: never invokes docker" $? \
+            "got ${#docker_records} docker invocation(s)"
+
+        [[ ! -e $mmd ]]
+        check "$wrapper $flag: does not write MACHINE.md" $?
+    done
+done
+
+# The `--` escape has to keep working, or there is no way to ask claude itself
+# for its version from inside the sandbox.
+reset_docker_log
+claude-docker-arm -- --version >/dev/null 2>&1
+load_docker_log
+local -a reply
+records_matching run -it --rm
+if (( ${#reply} == 1 )); then
+    argv_has "$reply[1]" --version
+    check "claude-docker-arm -- --version: --version still reaches claude" $?
+else
+    not_ok "claude-docker-arm -- --version: --version still reaches claude" \
+        "expected exactly one 'docker run -it --rm', got ${#reply}"
+fi
+
+# ============================================================================
+# The TAIL of the argv — the command the container actually runs.
+#
+# check_mounts covers the -v set, and the cases above cover the flags, but
+# nothing used to look past the image tag. That left the one argv every user
+# actually runs unconstrained: dropping "$@", dropping start.sh, or dropping
+# every -e credential forward kept the whole suite green. `--version` reaching
+# claude and starting a real sandbox shipped through exactly this gap.
+# ============================================================================
+
+reset_docker_log
+claude-docker-arm --resume xyz >/dev/null 2>&1
+load_docker_log
+local -a reply
+records_matching run -it --rm
+if (( ${#reply} == 1 )); then
+    local rec="$reply[1]"
+
+    # The passthrough tail, in order. Anchored as a contiguous sequence rather
+    # than four independent `argv_has` checks, which would pass on a reordered
+    # or interleaved argv.
+    argv_has_pair "$rec" claude --teammate-mode
+    check "run/tail: claude is invoked with --teammate-mode" $?
+    argv_has_pair "$rec" --teammate-mode in-process
+    check "run/tail: --teammate-mode carries in-process" $?
+    argv_has_pair "$rec" in-process --resume
+    check "run/tail: the user's arguments follow, in order" $?
+    argv_has_pair "$rec" --resume xyz
+    check "run/tail: the user's argument value survives intact" $?
+
+    # The launcher chain: without it the container starts claude directly and
+    # the tmux session (and therefore the netwatch window) never exists.
+    argv_has "$rec" /usr/local/bin/start.sh
+    check "run/tail: the container runs through start.sh" $?
+
+    # The forwarded agent socket. The mount is asserted by check_mounts; this
+    # is the env var that makes anything inside the container look at it.
+    argv_has_pair "$rec" -e SSH_AUTH_SOCK=/ssh-agent
+    check "run/tail: SSH_AUTH_SOCK points at the forwarded socket" $?
+else
+    not_ok "run/tail: exactly one 'docker run -it --rm'" \
+        "got ${#reply}"
+fi
+
+# ============================================================================
+# The container-name collision guard.
+#
+# Every case above runs with an empty container table, so `docker ps` returns
+# nothing and this guard passed VACUOUSLY across every assertion in this file.
+# It is the guard that stops a second `claude-docker-arm` in one directory from
+# dying on Docker's raw name conflict — whose obvious remedy, `docker rm -f`,
+# kills the live session the user was trying to reach.
+# ============================================================================
+
+_claude_docker_ctx arm64 base
+
+export FAKE_DOCKER_PS_DB="$_tc_name|cid1|running|Up 2 hours|2 hours|tupperclaude.arch=arm64"
+reset_docker_log
+out="$(claude-docker-arm 2>&1)"
+rc=$?
+
+(( rc != 0 ))
+check "run/collision: refuses while a sandbox is already running here" $? "rc=$rc"
+
+[[ $out == *'already running'* ]]
+check "run/collision: the error says a sandbox is already running" $? "got: $out"
+
+[[ $out == *claude-docker-shell* ]]
+check "run/collision: it points at claude-docker-shell, not 'docker rm -f'" $? "got: $out"
+
+# The whole point of failing fast: no sidecar work, no MACHINE.md, no run.
+load_docker_log
+records_matching run -it --rm
+(( ${#reply} == 0 ))
+check "run/collision: no container is started" $? "got ${#reply} run record(s)"
+
+# A STOPPED container holds the name too — `docker run --name` rejects it just
+# the same, so the guard must see it and give different advice.
+export FAKE_DOCKER_PS_DB="$_tc_name|cid1|exited|Exited (0) 3 days ago|3 days|tupperclaude.arch=arm64"
+reset_docker_log
+out="$(claude-docker-arm 2>&1)"
+rc=$?
+
+(( rc != 0 ))
+check "run/collision: a STOPPED container holding the name also refuses" $? "rc=$rc"
+
+[[ $out == *'docker rm'* ]]
+check "run/collision: a stopped holder is offered docker rm" $? "got: $out"
+
+unset FAKE_DOCKER_PS_DB
+
+command rm -f -- $mmd
+
 test_summary

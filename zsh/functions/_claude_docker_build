@@ -1,8 +1,14 @@
 #!/usr/bin/env zsh
-# _claude_docker_build <arch> <variant>
+# _claude_docker_build <arch> <variant> [-y|--yes] [-h|--help]
 #
 # Build the image for one (arch, variant) pair. <arch> is arm64 or amd64,
 # <variant> is base or playwright. See _claude_docker_ctx for the full matrix.
+#
+# The four claude-docker-build-* wrappers forward their own "$@" here, so
+# everything after <variant> is what the *user* typed. It is validated rather
+# than ignored: this function's one action costs ~15 minutes and ~9 GB, and
+# silently dropping `--no-cache` (or `--version`) meant a stray flag started a
+# full build instead of erroring out.
 #
 # The image bakes in a whitelist of the host's non-secret Claude Code config
 # (~/.claude.json, CLAUDE.md, settings.json, skills, commands, plugins) so a
@@ -17,6 +23,31 @@ emulate -L zsh
 setopt local_options noksharrays
 
 _claude_docker_ctx "$1" "$2" || return 1
+shift 2
+
+# Argument validation before any preflight: a typo must be answerable without
+# a running daemon, and must never reach `docker build`. $_tc_build_cmd is the
+# wrapper the user actually typed — ctx publishes it so the message names the
+# right one of the four.
+local yes=0 arg
+for arg in "$@"; do
+    case $arg in
+        -y|--yes) yes=1 ;;
+        -h|--help)
+            # Also handled in each wrapper, which sees only $1; this catches
+            # `claude-docker-build-arm -y --help` and anything else past it.
+            _claude_docker_help "$_tc_build_cmd"
+            return 0
+            ;;
+        *)
+            _claude_docker_err "unknown argument '$arg'" \
+                "usage: $_tc_build_cmd [-y|--yes]" \
+                "$_tc_build_cmd --help" \
+                'docker build flags (--no-cache, --progress, ...) are not forwarded; edit docker/Dockerfile or run docker build yourself'
+            return 1
+            ;;
+    esac
+done
 
 _claude_docker_check docker-bin || {
     _claude_docker_err "docker is not installed" "${_tc_check_fix[@]}"
@@ -31,6 +62,33 @@ _claude_docker_check claude-json || {
     return 1
 }
 
+# A build writes 9-11 GB of layers. Out of disk, it fails roughly twelve
+# minutes in with a raw Docker "no space left on device" that names neither the
+# cause nor the fix, having already spent the user's time. Ask first.
+#
+# Deliberately here and not in _claude_docker_check: free space is a property of
+# the thing about to happen, not a setup prerequisite the doctor should tabulate
+# — and it is cheap enough to re-measure on every build.
+local docker_root df_target free_kb
+docker_root="$(command docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+# Under Docker Desktop that path lives inside the Linux VM and does not exist on
+# the host, so it cannot be df'd from here; fall back to $HOME, which sits on
+# the same volume as the VM's growable disk image.
+df_target=$HOME
+[[ -n $docker_root && -d $docker_root ]] && df_target=$docker_root
+# `df -k` (POSIX, identical on macOS/BSD and GNU) — Available is field 4 of the
+# row after the header. -k rather than -h because "9.3Gi" is not arithmetic.
+free_kb="$(command df -k "$df_target" 2>/dev/null | command awk 'NR == 2 {print $4}')"
+# Anything unparseable means we learned nothing; say nothing rather than block a
+# build over a df output shape we did not anticipate.
+if [[ $free_kb == <-> ]] && (( free_kb < 12 * 1024 * 1024 )); then
+    _claude_docker_err "not enough free disk to build $_tc_image: $(( free_kb / 1024 / 1024 )) GB free on $df_target, ~12 GB needed" \
+        'claude-docker-clean --dry-run    # what tupperclaude is holding, and how much' \
+        'docker system df                 # what Docker is holding overall' \
+        'docker builder prune             # drop the build cache'
+    return 1
+fi
+
 # The playwright variant is FROM'd on top of the base image for the same arch;
 # building it without that base image already present is the most likely user
 # mistake, so catch it loudly here rather than let docker build fail deep in a
@@ -43,6 +101,30 @@ if [[ "$_tc_variant" == playwright ]]; then
     }
 fi
 
+# The `aws` option changes what is IN the image but not its tag, so
+# claude-code-full-<arch> means two materially different things depending on how
+# it was built and `_claude_docker_check image` cannot tell them apart: flip the
+# option, then *run* rather than rebuild, and you silently get an image with no
+# AWS CLI. Stamp the answer into a label so the mismatch is at least detectable.
+local aws_included=''
+if [[ "$_tc_variant" == playwright ]]; then
+    # The AWS CLI is installed by the base image's Dockerfile alone; this variant
+    # is FROM'd on top and carries whatever the base carries, regardless of what
+    # the option says today. Take the base image's answer, or the label would
+    # contradict its own layers.
+    aws_included="$(command docker image inspect \
+        -f '{{index .Config.Labels "tupperclaude.aws"}}' "$base_image" 2>/dev/null)"
+fi
+# Anything else — the base variant, or a base image built before this label
+# existed — falls back to the option, which is then the best answer available.
+if [[ $aws_included != (true|false) ]]; then
+    if _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
+        aws_included=true
+    else
+        aws_included=false
+    fi
+fi
+
 local dockerfile
 dockerfile="$(_claude_docker_opt dockerfile CLAUDE_DOCKER_DOCKERFILE "$_tc_dockerfile")"
 if [[ ! -f "$dockerfile" ]]; then
@@ -53,8 +135,38 @@ fi
 
 # Building an amd64 image on Apple Silicon works, but every RUN executes under
 # QEMU emulation. Say so up front rather than let it look like a hang.
-if [[ "$_tc_arch" == amd64 && "$(uname -m)" == arm64 ]]; then
-    print "Note: cross-building linux/amd64 on Apple Silicon — RUN steps are QEMU-emulated and slow."
+if [[ "$_tc_arch" == amd64 && "$(command uname -m)" == arm64 ]]; then
+    _claude_docker_info "cross-building linux/amd64 on Apple Silicon — RUN steps are QEMU-emulated and slow."
+fi
+
+# Cost gate. claude-docker-clean makes you confirm before it destroys this
+# image; creating it costs exactly as much, so a first build asks too.
+#
+# Only a FIRST build asks: a rebuild reuses the layer cache, and someone who
+# already has the image and typed the command again is doing so deliberately.
+if (( ! yes )) && ! _claude_docker_check image "$_tc_image"; then
+    if [[ -t 0 && -t 1 ]]; then
+        _claude_docker_info "$_tc_image does not exist yet — building it takes ~15 minutes and ~9 GB of disk."
+        local REPLY=''
+        read -q "REPLY?Continue? [y/N] "
+        print -r -- ""
+        if [[ $REPLY != y ]]; then
+            # Non-zero, unlike claude-docker-clean's identical-looking prompt.
+            # The difference is what comes after: nothing downstream depends on
+            # a removal, but plenty depends on a build. Reporting success with
+            # no image built sends `claude-docker-build-arm && claude-docker-arm`
+            # straight into a run that fails on the missing image, and lets a
+            # `set -e` script sail past the step its user just declined.
+            _claude_docker_info "aborted, nothing built."
+            return 1
+        fi
+    else
+        # Non-interactive callers — CI, the configure wizard, `… | tail` — have
+        # always been able to build unattended, and a prompt with no terminal
+        # would hang them. Warn instead, so the price still lands in the log.
+        _claude_docker_warn "$_tc_image does not exist yet — this build takes ~15 minutes and ~9 GB of disk" \
+            "$_tc_build_cmd --yes    # confirm up front and silence this"
+    fi
 fi
 
 local tmpdir
@@ -81,34 +193,67 @@ local build_status
     command cp -R "$HOME/.claude/plugins/marketplaces/." "$settings_dir/plugins/marketplaces/" 2>/dev/null
     command cp -R "$HOME/.claude/plugins/cache/."        "$settings_dir/plugins/cache/"        2>/dev/null
 
-    local f
+    # These files record absolute host paths; rewrite them to the container home.
+    #
+    # Through jq rather than sed, because $HOME is *data* here: a `#` in it would
+    # end the s### delimiter, and an `&` or a backslash would expand as a
+    # replacement metacharacter — either way silently baking wrong plugin paths
+    # into the image. jq takes both sides as --arg, and `split/1` splits on a
+    # literal string (unlike `sub`/`gsub`, which are regex), so nothing in $HOME
+    # can be interpreted as syntax at all. jq is guaranteed present: the
+    # `claude-json` check above fails the build without it.
+    local f staged rewritten
     for f in installed_plugins.json known_marketplaces.json plugin-catalog-cache.json; do
         command cp "$HOME/.claude/plugins/$f" "$settings_dir/plugins/$f" 2>/dev/null
-        # These files record absolute host paths; rewrite them to the container home.
-        [[ -f "$settings_dir/plugins/$f" ]] && \
-            _claude_docker_sed_i "s#$HOME/.claude#/home/agent/.claude#g" "$settings_dir/plugins/$f"
+        staged="$settings_dir/plugins/$f"
+        [[ -f "$staged" ]] || continue
+        # Explicit recursion rather than jq's `walk`: object KEYS carry paths too
+        # (the catalog cache keys by plugin directory) and `walk` visits values
+        # only, so it would leave half the host paths in place.
+        if rewritten="$(command jq --arg from "$HOME/.claude" --arg to /home/agent/.claude '
+                def rep($s): $s | split($from) | join($to);
+                def rewrite:
+                    if   type == "object" then with_entries(.key |= rep(.) | .value |= rewrite)
+                    elif type == "array"  then map(rewrite)
+                    elif type == "string" then rep(.)
+                    else . end;
+                rewrite' "$staged" 2>/dev/null)"; then
+            print -r -- "$rewritten" >| "$staged"
+        else
+            # Staging it unrewritten is better than staging nothing, but the
+            # baked file will point at host paths that do not exist in the image.
+            _claude_docker_warn "could not rewrite host paths in $f — it is not valid JSON; staging it unchanged" \
+                "jq . ${(q)HOME}/.claude/plugins/$f    # shows where it is malformed"
+        fi
     done
 
     command cp "$dockerfile" "$tmpdir/Dockerfile"
 
     # The baked config is your own. Flag the one case that surprises people: an
     # MCP server configured with an inline API key ends up inside the image layer.
-    if grep -qiE '"(api_?key|token|secret|password)"[[:space:]]*:' "$tmpdir/claude.json"; then
-        print "Warning: ~/.claude.json contains key/token-looking fields; they will be baked into $_tc_image."
-        print "         Keep this image local — do not push it to a shared or public registry."
+    #
+    # Via _claude_docker_warn, so it goes to STDERR: on stdout it was invisible
+    # to anyone running the build through `| tail` or a log filter, which is
+    # exactly how a long build gets watched.
+    if command grep -qiE '"(api_?key|token|secret|password)"[[:space:]]*:' "$tmpdir/claude.json"; then
+        _claude_docker_warn "~/.claude.json contains key/token-looking fields; they will be baked into $_tc_image" \
+            'keep this image local — do not push it to a shared or public registry'
     fi
 
-    local build_date="$(date +%Y-%m-%dT%H:%M:%S)"
-    local -a build_args=(--build-arg "BUILD_DATE=$build_date")
+    local build_date="$(command date +%Y-%m-%dT%H:%M:%S)"
+    local -a build_args=(
+        --build-arg "BUILD_DATE=$build_date"
+        --label     "tupperclaude.aws=$aws_included"
+    )
     if _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
         build_args+=(--build-arg INCLUDE_AWS=1)
-        print "Including AWS CLI v2 in the image (aws option is set)."
+        _claude_docker_info "including AWS CLI v2 in the image (aws option is set)."
     fi
     if [[ "$_tc_variant" == playwright ]]; then
         build_args+=(--build-arg "BASE_IMAGE=$base_image")
     fi
 
-    print "Building $_tc_image ($_tc_platform)..."
+    _claude_docker_info "building $_tc_image ($_tc_platform)…"
     command docker build --platform "$_tc_platform" "${build_args[@]}" -t "$_tc_image" -f "$tmpdir/Dockerfile" "$tmpdir"
     build_status=$?
 } always {
@@ -120,23 +265,37 @@ if (( build_status != 0 )); then
     return 1
 fi
 
-command docker image prune -f >/dev/null
+# No `docker image prune -f` here. It removes EVERY dangling image on the host,
+# including other projects' build leftovers — claude-docker-clean treats that
+# same command as destructive enough to need an explicit --prune opt-in, and a
+# build has even less business doing it silently. Reclaim with:
+#     claude-docker-clean --prune
 
-print ""
-print "Tool versions in $_tc_image:"
 local -a tools=(
     "claude --version" "gh --version" "gcloud --version" "rg --version"
     "yq --version" "tmux -V" "uv --version" "psql --version" "mysql --version"
     "deno --version" "linear --version" "rustc --version" "cargo --version"
     "rust-analyzer --version" "pulumi version" "tailscale version"
 )
-_claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS && tools+=("aws --version")
+# Keyed off the label just stamped, not off the option: for the playwright
+# variant they can disagree, and probing for a tool the image does not have would
+# report `aws: not found` on a perfectly correct image.
+[[ $aws_included == true ]] && tools+=("aws --version")
 [[ "$_tc_variant" == playwright ]] && tools+=("playwright --version")
 
-local tool
+# One throwaway container per tool. Unannounced this reads as a hang for a
+# minute or more — considerably worse under QEMU, where each start is emulated.
+print -r -- ""
+_claude_docker_info "verifying tool versions in $_tc_image — ${#tools} short container runs, slower under emulation…"
+
+local tool line
 for tool in $tools; do
-    command docker run --rm --platform "$_tc_platform" "$_tc_image" ${=tool} 2>/dev/null | head -1
+    line="$(command docker run --rm --platform "$_tc_platform" "$_tc_image" ${=tool} 2>/dev/null | command head -1)"
+    # A missing tool used to print an empty line, indistinguishable from a tool
+    # that simply reports nothing. Name it instead — this sweep exists to tell
+    # the two apart.
+    print -r -- "  ${line:-${tool%% *}: not found}"
 done
 
-print ""
-print "Success! $_tc_image built on $build_date"
+print -r -- ""
+_claude_docker_info "success! $_tc_image built on $build_date"

@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# _claude_docker_check <what> [arg]
+# _claude_docker_check <what> [arg] [arg2]
 #
 # One preflight predicate per concern. Returns 0 (pass) or 1 (fail), prints
 # nothing, and publishes two globals the caller formats however it likes:
@@ -16,17 +16,18 @@
 #   docker-bin              docker is on $PATH
 #   docker-daemon           the daemon answers
 #   jq                      jq is on $PATH  (a hard runtime dependency)
-#   image <image>           named image exists locally  (detail = age)
+#   image <image> [build-cmd]
+#                           named image exists locally  (detail = age)
 #   claude-json             ~/.claude.json exists and is valid JSON
 #   network                 the configured network mode is one ctx accepts
-#   authkey                 a Tailscale auth key is resolvable
+#   authkey [node]          a Tailscale auth key is resolvable
 #   op-signin               1Password CLI is available and unlocked
 #   ssh-agent               Docker Desktop's ssh-agent socket is present
 
 emulate -L zsh
 setopt local_options noksharrays
 
-local what=$1 arg=$2
+local what=$1 arg=$2 arg2=$3
 typeset -g _tc_check_detail=''
 typeset -ga _tc_check_fix=()
 
@@ -72,19 +73,33 @@ image)
         return 0
     fi
     _tc_check_detail="$arg not built"
-    # Map the image name back to the command that builds it.
-    local build_arch=arm
-    [[ $arg == *amd64* ]] && build_arch=amd64
-    local build_cmd="claude-docker-build-$build_arch"
-    if [[ $arg == *playwright* ]]; then
+
+    # <arg2> is the command that builds <arg>. Callers holding a context pass
+    # $_tc_build_cmd, which _claude_docker_ctx publishes precisely so that the
+    # variant matrix is written down in exactly one place — this used to map the
+    # name back to a command itself, making it a fourth independent derivation.
+    #
+    # The fallback is for the callers that legitimately have no context because
+    # they iterate over image NAMES (claude-docker-clean sweeping the machine).
+    # It is the last remaining name→command mapping; give it a build command and
+    # it goes away.
+    local build_cmd=$arg2
+    if [[ -z $build_cmd ]]; then
+        build_cmd=claude-docker-build-arm
+        [[ $arg == *amd64* ]] && build_cmd=claude-docker-build-amd64
+        [[ $arg == *playwright* ]] && build_cmd="$build_cmd-playwright"
+    fi
+
+    if [[ $build_cmd == *-playwright ]]; then
         # The playwright image is built FROM the same-arch base, so a missing
         # playwright image usually means the base is missing too. Offer both, in
-        # the order they must be run.
-        local base_img="claude-code-full-$([[ $build_arch == amd64 ]] && print amd64 || print arm64)"
+        # the order they must be run. Both names come from dropping the
+        # playwright part off values that ctx produced — not a second matrix.
+        local base_img=${arg/-playwright-/-}
         _tc_check_fix=()
         command docker image inspect "$base_img" >/dev/null 2>&1 \
-            || _tc_check_fix+=("claude-docker-build-$build_arch    # the playwright image is built FROM this")
-        _tc_check_fix+=("claude-docker-build-$build_arch-playwright")
+            || _tc_check_fix+=("${build_cmd%-playwright}    # the playwright image is built FROM this")
+        _tc_check_fix+=("$build_cmd")
     else
         _tc_check_fix=("$build_cmd")
     fi
@@ -142,19 +157,34 @@ authkey)
     # calling a missing key a failure — otherwise every established session
     # reports a problem it does not have.
     #
+    # WHICH sidecar depends on who is asking, and getting that wrong is a false
+    # pass rather than a false alarm:
+    #
+    #   <arg> given  — the caller is about to create that one specific node and
+    #                  wants to know whether it can. Only that node counts. The
+    #                  both-variants scan below would let a working BASE sidecar
+    #                  vouch for a PLAYWRIGHT sidecar that cannot be created,
+    #                  and the caller would go on to create it with an empty key.
+    #   <arg> absent — doctor's question: can this machine bring up a sidecar at
+    #                  all? Any existing node answers it.
+    #
     # Sidecar names belong to _claude_docker_ctx. Ask it in a subshell so the
     # caller's live _tc_* globals survive, with the network option cleared so a
     # broken `network` setting can't stop this check from answering. The arch is
     # irrelevant to a sidecar name — only the variant picks the prefix.
     local -a nodes
-    nodes=(${(f)"$(
-        zstyle -d ':omz:plugins:tupperclaude' network
-        unset CLAUDE_DOCKER_NETWORK
-        local v
-        for v in base playwright; do
-            _claude_docker_ctx arm64 "$v" >/dev/null 2>&1 && print -r -- "$_tc_ts_node"
-        done
-    )"})
+    if [[ -n $arg ]]; then
+        nodes=("$arg")
+    else
+        nodes=(${(f)"$(
+            zstyle -d ':omz:plugins:tupperclaude' network
+            unset CLAUDE_DOCKER_NETWORK
+            local v
+            for v in base playwright; do
+                _claude_docker_ctx arm64 "$v" >/dev/null 2>&1 && print -r -- "$_tc_ts_node"
+            done
+        )"})
+    fi
     local existing='' node
     for node in "${nodes[@]}"; do
         if command docker inspect "$node" >/dev/null 2>&1; then

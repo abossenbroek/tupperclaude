@@ -1,8 +1,15 @@
 #!/usr/bin/env zsh
 # Run Claude Code in the native linux/arm64 base container. Extra args pass through to claude.
 #
-# --help is the WRAPPER's: `claude-docker-arm -- --help` passes --help to claude.
+# --help and --version are the WRAPPER's: `claude-docker-arm -- --help` passes
+# them to claude instead. Both are reserved because both are what people type at
+# an unfamiliar command, and passing --version through would start a container,
+# write MACHINE.md into the working directory and mint a tailnet node just to
+# print a version string.
 
-[[ "${1-}" == (-h|--help) ]] && { _claude_docker_help claude-docker-arm; return 0 }
-[[ "${1-}" == -- ]] && shift
+case "${1-}" in
+    -h|--help)    _claude_docker_help claude-docker-arm; return 0 ;;
+    -v|--version) print -r -- "tupperclaude ${TUPPERCLAUDE_VERSION:-unknown}"; return 0 ;;
+    --)           shift ;;
+esac
 _claude_docker_run arm64 base "$@"

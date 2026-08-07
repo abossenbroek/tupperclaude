@@ -19,8 +19,9 @@
 # wherever they appear in .zshrc.
 
 emulate -L zsh
-# noksharrays: KSH_ARRAYS would change ${(P)...} indexing behaviour below.
-setopt local_options noksharrays
+# noksharrays:  KSH_ARRAYS would change ${(P)...} indexing behaviour below.
+# extendedglob: for the (#i) case-insensitive flag on the falsey-value patterns.
+setopt local_options noksharrays extendedglob
 
 local boolean=0
 if [[ $1 == -b ]]; then
@@ -42,11 +43,14 @@ if (( boolean )); then
     # whether that named variable exists at all.
     if (( ${(P)+envvar} )); then
         local v=${(P)envvar}
-        [[ -n $v && $v != (no|off|false|0|NO|OFF|FALSE) ]]
+        # (#i) — case-insensitive. Spelling the variants out by hand missed the
+        # mixed case a user actually types (`No`, `Off`, `False`), and the env
+        # and default branches had drifted to two different lists.
+        [[ -n $v && $v != (#i)(no|off|false|0) ]]
         return $?
     fi
 
-    [[ -n $default && $default != (no|off|false|0) ]]
+    [[ -n $default && $default != (#i)(no|off|false|0) ]]
     return $?
 fi
 

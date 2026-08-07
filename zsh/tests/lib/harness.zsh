@@ -10,12 +10,18 @@
 # Provides:
 #   ok / not_ok / check     TAP-ish assertion output + counters
 #   test_summary            trailing "1..N" line; return status = pass/fail
+#   require_fn NAME         report a not-yet-written target instead of crashing
+#   reset_docker_log        truncate the argv log AND the removal journal
 #   load_docker_log         parse $FAKE_DOCKER_LOG into $docker_records
 #   argv_tokens RECORD      split one record into $reply (an array)
 #   argv_has RECORD TOK     true if TOK appears as a whole argv token
 #   argv_has_pair R A B     true if token A is immediately followed by B
 #   records_matching TOK... records whose argv[1] is TOK[1] and which also
 #                            contain every remaining TOK; sets $reply
+#   mount_specs RECORD      every "host:container[:opts]" that followed a -v
+#   check_mounts R LABEL    assert every bind mount's HOST side really exists
+#                            and is of the expected kind — the one assertion
+#                            that goes to the filesystem rather than to argv
 
 emulate -L zsh
 setopt local_options
@@ -92,6 +98,16 @@ test_summary() {
 # through `"$(<file)"`, so this splits unambiguously.
 
 typeset -ga docker_records
+
+# reset_docker_log — start a case with a clean slate. Truncates BOTH the argv
+# log and the shim's removal journal ($FAKE_DOCKER_LOG.removed): a `docker rm`
+# recorded by an earlier case would otherwise keep that container "gone" for
+# every case after it, in a way `: >$FAKE_DOCKER_LOG` alone does not undo.
+reset_docker_log() {
+    : >|"$FAKE_DOCKER_LOG"
+    : >|"$FAKE_DOCKER_LOG.removed"
+    docker_records=()
+}
 
 load_docker_log() {
     docker_records=()

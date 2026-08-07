@@ -6,12 +6,35 @@ on:
 
 jobs:
   zsh-tests:
-    runs-on: ubuntu-latest
+    # macOS is the TARGET platform and Linux is where CI is cheap, so the suite
+    # runs on both. This is not redundancy: _claude_docker_sed_i exists solely
+    # to bridge BSD sed (macOS) and GNU sed, and running it only against GNU sed
+    # tested exactly half of the reason it exists. The same goes for script(1),
+    # whose command syntax differs between BSD and util-linux, and for the
+    # BSD/GNU splits in du, awk and column that the utility commands lean on.
+    # `fail-fast: false` so a macOS-only or Linux-only break is visible as such.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    name: zsh tests (${{ matrix.os }})
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install zsh
+      # macOS runners ship zsh (it is the system shell) and jq; only Linux
+      # needs anything installed.
+      - name: Install zsh and jq (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh jq
+
+      - name: Record the toolchain under test
+        run: |
+          zsh --version
+          jq --version
+          # Which sed this leg exercises is the whole point of the matrix.
+          sed --version 2>/dev/null | head -1 || echo "sed: BSD (no --version)"
 
       # No Docker daemon is installed or required here on purpose: the whole
       # suite runs against zsh/tests/fake-bin/docker, a shim that records
@@ -20,5 +43,18 @@ jobs:
       # and there is no way to run the real Docker Desktop stack in CI — but
       # argv assertions need neither. Do not add a matrix over Docker
       # versions; there is nothing to matrix since docker is faked.
+      #
+      # The fake shim is also the safety boundary: it is first on $PATH, and
+      # every function calls `command docker`, so nothing in this suite can
+      # build an image or remove a container even where a real daemon exists.
+      - name: Syntax-check every zsh file
+        run: |
+          set -e
+          for f in zsh/tupperclaude.zsh tupperclaude.plugin.zsh \
+                   zsh/functions/* zsh/templates/*.zsh \
+                   zsh/tests/*.zsh zsh/tests/lib/*.zsh zsh/tests/fake-bin/docker; do
+            zsh -n "$f" || { echo "zsh -n failed: $f"; exit 1; }
+          done
+
       - name: Run zsh test suite
         run: zsh zsh/tests/run-tests.zsh

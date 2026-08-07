@@ -66,6 +66,41 @@
 # zstyle ':omz:plugins:tupperclaude' home ~/.config/claude-docker
 
 # ---------------------------------------------------------------------------
+# machine-md — write MACHINE.md into the working directory at launch
+#
+# On launch the run path writes a MACHINE.md describing the sandbox to Claude
+# (image, arch, variant, network mode, mounts, toolchain). It is rewritten
+# whenever those differ from what the file records, so switching to the
+# playwright variant does not leave Claude believing it has no browser — which
+# also means your own edits to a tupperclaude-written MACHINE.md do not
+# survive such a switch. A MACHINE.md this plugin did not write is never
+# touched.
+#
+# Defaults to on. Turn it off if you would rather a first run did not modify
+# whatever repository you happen to be standing in.
+#
+# Env var: CLAUDE_DOCKER_MACHINE_MD
+# ---------------------------------------------------------------------------
+# zstyle ':omz:plugins:tupperclaude' machine-md on
+
+# ---------------------------------------------------------------------------
+# docker-sock — mount the host docker socket into the sandbox
+#
+# On (the default) lets Claude run `docker` inside the sandbox. It also means
+# the sandbox is NOT a security boundary against the code running in it: the
+# docker socket is equivalent to root on the host, so anything holding it can
+# start a privileged container and read or write your whole filesystem.
+#
+# On by default because this tool is a reproducible, disposable ENVIRONMENT —
+# its isolation is about not polluting the host, not about containing hostile
+# code — and because MACHINE.md tells Claude that docker is available. Set it
+# off for a real boundary, at the cost of docker-in-the-sandbox.
+#
+# Env var: CLAUDE_DOCKER_DOCKER_SOCK
+# ---------------------------------------------------------------------------
+# zstyle ':omz:plugins:tupperclaude' docker-sock on
+
+# ---------------------------------------------------------------------------
 # dockerfile — override the build recipe
 #
 # Almost never needed — the plugin already picks the right Dockerfile

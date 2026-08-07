@@ -1,8 +1,8 @@
 #!/usr/bin/env zsh
 # _claude_docker_help <command-name>
 #
-# Print the usage block for one tupperclaude command. Every command's
-# `-h|--help` routes through here so the shape is identical everywhere:
+# Print the usage block for one of the eight run/build wrappers. Their
+# `-h|--help` routes through here so the shape is identical across all eight:
 #
 #   <name> — <one-line summary>
 #
@@ -16,19 +16,25 @@
 # consistency mechanical instead of aspirational — the wrappers stay one line
 # of dispatch plus one line of help.
 #
-# The `run` shape deliberately reserves --help for the wrapper: `claude-docker-arm
-# --help` describes the wrapper, and `claude-docker-arm -- --help` passes --help
-# through to claude. Without the reservation there is no way to ask the wrapper
-# itself for help.
+# Deliberately NOT the five utility commands (doctor, status, shell, configure,
+# clean). Each of those takes flags of its own and documents them in its own
+# `-h|--help`, next to the parser that accepts them; entries here for them were
+# never called, and drifted — the clean entry published a flag list the parser
+# disagreed with. One published usage string per command, living beside its
+# parser, is the only arrangement that cannot rot.
+#
+# The `run` shape deliberately reserves -h/--help and -v/--version for the
+# wrapper: `claude-docker-arm --help` describes the wrapper, and
+# `claude-docker-arm -- --help` passes it through to claude. Without the
+# reservation there is no way to ask the wrapper itself for help — and --version
+# in particular would otherwise start a container, write MACHINE.md and mint a
+# tailnet node to answer a question about a version string.
 
 emulate -L zsh
 setopt local_options
 
 local cmd=${1-}
-local shape=util summary='' detail='' requires=''
-# Non-empty $usage replaces the usage line the shape would otherwise produce,
-# for the two commands that take arguments of their own.
-local usage=''
+local shape='' summary='' detail='' requires=''
 
 case $cmd in
     claude-docker-arm)
@@ -77,28 +83,6 @@ case $cmd in
         detail='Builds claude-code-full-playwright-amd64 FROM the amd64 base image.'
         requires='claude-docker-build-amd64'
         ;;
-    claude-docker-doctor)
-        summary='check the setup and print a fix for anything broken'
-        detail='Reports docker, credentials, Tailscale and image state, plus the resolved configuration. Exits non-zero if a required check fails.'
-        ;;
-    claude-docker-status)
-        summary='list every running sandbox across all directories'
-        detail='Shows directory, arch/variant, uptime and whether the Tailscale sidecar is genuinely online.'
-        ;;
-    claude-docker-shell)
-        summary='open an extra shell in this directory'"'"'s running sandbox'
-        usage='Usage: claude-docker-shell [cmd...]'
-        detail='With no arguments runs an interactive bash; any arguments are exec'"'"'d in the container instead. Does not disturb the running tmux session.'
-        ;;
-    claude-docker-configure)
-        summary='first-run setup wizard'
-        detail='Walks through Docker, the Tailscale auth key and the first image build, and writes the answers to ~/.tupperclaude.zsh.'
-        ;;
-    claude-docker-clean)
-        summary='tear down tupperclaude containers, images and volumes'
-        usage='Usage: claude-docker-clean [-y|--yes] [--dry-run] [--force] [--state] [--prune]'
-        detail='Destructive: prints what it will remove and asks for confirmation first. Preserves the Docker-only Claude logins.'
-        ;;
     *)
         _claude_docker_err "no help for '$cmd'" "tupperclaude --help"
         return 1
@@ -107,26 +91,30 @@ esac
 
 print -r -- "$cmd — $summary"
 print ""
-if [[ -n $usage ]]; then
-    print -r -- "$usage"
-else
 case $shape in
     run)
         print -r -- "Usage: $cmd [claude args...]"
         print -r -- "       $cmd -- --help      # pass --help through to claude"
+        print ""
+        print -r -- "  -h, --help     show this message"
+        print -r -- "  -v, --version  print the tupperclaude version"
+        print -r -- "Every other argument goes to claude; \`--\` sends -h/-v there too."
         ;;
     build)
-        print -r -- "Usage: $cmd"
-        ;;
-    util)
-        print -r -- "Usage: $cmd [-h|--help]"
+        # The flag and the cost belong together: -y is how you skip the
+        # confirmation, so --help has to say what that confirmation was for.
+        print -r -- "Usage: $cmd [-y|--yes]"
+        print ""
+        print -r -- "  -y, --yes  build without the confirmation prompt"
+        print -r -- "Takes ~15 minutes and ~9 GB of disk, and needs ~12 GB free to start."
         ;;
 esac
-fi
 print ""
 print -r -- "$detail"
 if [[ -n $requires ]]; then
-    print -r -- "Requires the image to exist: $requires"
+    # Names the builder as a command to run, not as the image's name — the old
+    # "Requires the image to exist: claude-docker-build-arm" read as a tag.
+    print -r -- "Requires: the image built by $requires — run that first if it is missing."
 fi
 print ""
 # Never point a command at itself.

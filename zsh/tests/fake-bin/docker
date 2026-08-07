@@ -100,7 +100,23 @@ fail_if_requested() {
     return 0
 }
 
+# `docker rm` is the one mutation this shim has to actually MODEL rather than
+# just record. claude-ts-ensure removes a legacy sidecar and then falls through
+# to re-create it, re-inspecting the name in between; a shim whose inventory
+# never changes reports the container as still present and still running, the
+# function returns early, and the re-create branch is unreachable. So removals
+# are journalled next to the argv log (same lifetime — run-tests.zsh makes a
+# fresh one per test file) and consulted by every existence test.
+typeset -g FAKE_DOCKER_REMOVED_LOG="$FAKE_DOCKER_LOG.removed"
+
+container_removed() {
+    [[ -s $FAKE_DOCKER_REMOVED_LOG ]] || return 1
+    local -a gone=(${(f)"$(<$FAKE_DOCKER_REMOVED_LOG)"})
+    (( ${gone[(Ie)$1]} ))
+}
+
 container_exists() {
+    container_removed "$1" && return 1
     local -a existing=(${=FAKE_DOCKER_CONTAINERS:-})
     (( ${existing[(Ie)$1]} ))
 }
@@ -136,20 +152,51 @@ image)
     if [[ $2 == inspect ]]; then
         fail_if_requested 'image inspect'
         local img=$argv[-1]
+
+        # Callers ask for one of two things, and answering the wrong one is
+        # invisible: `-f '{{.Created}}'` (does it exist, how old) or
+        # `-f '{{index .Config.Labels "k"}}'` (what was it built with). Before
+        # this, every format got the timestamp back — so a test could not tell a
+        # label that says "false" from one that was never stamped, which is the
+        # whole question the run path's aws-mismatch warning turns on.
+        local ins_fmt='' ai=1
+        while (( ai < $# )); do
+            (( ai++ ))
+            case ${argv[ai]} in
+                -f|--format) (( ai++ )); ins_fmt=${argv[ai]} ;;
+                --format=*)  ins_fmt=${argv[ai]#--format=} ;;
+            esac
+        done
+
         local -a existing
         if (( ${+FAKE_DOCKER_IMAGES} )); then
             existing=(${=FAKE_DOCKER_IMAGES})
-        else
-            # Unset: everything exists.
-            print -r -- '2026-01-01T00:00:00.000000000Z'
+            if (( ! ${existing[(Ie)$img]} )); then
+                print -u2 -r -- "Error: No such image: $img"
+                exit 1
+            fi
+        fi
+        # FAKE_DOCKER_IMAGES unset means every image exists.
+
+        if [[ $ins_fmt == *.Config.Labels* ]]; then
+            # $FAKE_DOCKER_IMAGE_LABELS: "<image>=k=v,k=v;<image>=k=v". An image
+            # with no entry, or a key it does not carry, prints nothing — which
+            # is what a real image built before the label existed does, and the
+            # case the run path must stay silent about.
+            local lkey=${${ins_fmt#*\"}%\"*}
+            local lrow lpair
+            for lrow in "${(@s:;:)${FAKE_DOCKER_IMAGE_LABELS:-}}"; do
+                [[ ${lrow%%=*} == $img ]] || continue
+                for lpair in "${(@s:,:)${lrow#*=}}"; do
+                    [[ ${lpair%%=*} == $lkey ]] && { print -r -- "${lpair#*=}"; exit 0 }
+                done
+            done
+            print -r -- ''
             exit 0
         fi
-        if (( ${existing[(Ie)$img]} )); then
-            print -r -- '2026-01-01T00:00:00.000000000Z'
-            exit 0
-        fi
-        print -u2 -r -- "Error: No such image: $img"
-        exit 1
+
+        print -r -- '2026-01-01T00:00:00.000000000Z'
+        exit 0
     fi
     fail_if_requested 'image prune' 'image'
     # `image prune` and anything else under `image`: succeed quietly.
@@ -398,24 +445,79 @@ inspect)
 exec)
     fail_if_requested exec
     if (( $# >= 3 )) && [[ "$*" == *'tailscale status --json'* ]]; then
-        if [[ ${FAKE_DOCKER_TS_ONLINE:-1} == 1 ]]; then
-            print -r -- '{"BackendState":"Running","Self":{"Online":true},"Health":[]}'
+        # Three distinct worlds, not two. `running-but-offline` is the reason
+        # _claude_ts_online tests Self.Online at all: a sidecar whose backend
+        # came up but whose netmap is stale reports BackendState=Running while
+        # resolving nothing, and a shim that collapsed it into the Starting case
+        # left that distinction untested.
+        local ts_backend ts_online
+        case ${FAKE_DOCKER_TS_ONLINE:-1} in
+            1)                   ts_backend=Running; ts_online=true ;;
+            running-but-offline) ts_backend=Running; ts_online=false ;;
+            *)                   ts_backend=Starting; ts_online=false ;;
+        esac
+        if [[ $ts_online == true ]]; then
+            print -r -- '{"BackendState":"'"$ts_backend"'","Self":{"Online":true},"Health":[]}'
         else
             local -a hl=("${(@s:,:)${FAKE_DOCKER_TS_HEALTH:-not connected}}")
-            local hj="${(j:,:)${(@)hl/#/\"}}"
             # Re-quote each health string as JSON.
-            hj=''
-            local h
+            local hj='' h
             for h in $hl; do
                 hj+="${hj:+,}\"$h\""
             done
-            print -r -- '{"BackendState":"Starting","Self":{"Online":false},"Health":['"$hj"']}'
+            print -r -- '{"BackendState":"'"$ts_backend"'","Self":{"Online":false},"Health":['"$hj"']}'
         fi
     fi
     exit 0
     ;;
 
-run|build|start|restart|stop|rm|logs|*)
+rm)
+    fail_if_requested rm
+    # Journal the removal so a later `inspect` in the same test agrees that the
+    # container is gone — see container_removed above.
+    local ra
+    for ra in "${@[2,-1]}"; do
+        [[ $ra == -* ]] && continue
+        print -r -- "$ra" >>| "$FAKE_DOCKER_REMOVED_LOG"
+    done
+    exit 0
+    ;;
+
+run)
+    fail_if_requested run
+    # A `run --name X` un-removes X, so a rm-then-recreate sequence leaves the
+    # inventory consistent for anything that inspects afterwards.
+    local ri=1 newname=''
+    while (( ri < $# )); do
+        (( ri++ ))
+        [[ ${argv[ri]} == --name ]] && { (( ri++ )); newname=${argv[ri]} }
+    done
+    if [[ -n $newname && -s $FAKE_DOCKER_REMOVED_LOG ]]; then
+        local -a gone=(${(f)"$(<$FAKE_DOCKER_REMOVED_LOG)"})
+        print -r -l -- ${gone:#$newname} >|"$FAKE_DOCKER_REMOVED_LOG"
+    fi
+    exit 0
+    ;;
+
+build)
+    # _claude_docker_build stages its build context in an mktemp -d that its
+    # own `always { }` block deletes the moment the build returns — so the only
+    # place the staged context can be inspected is from inside the build
+    # itself. When $FAKE_DOCKER_CONTEXT_COPY names a directory, snapshot the
+    # context there before returning, which is what makes the whole staging
+    # pipeline (config whitelist, path rewrites, Dockerfile choice) assertable.
+    if [[ -n ${FAKE_DOCKER_CONTEXT_COPY:-} ]]; then
+        local ctx=$argv[-1]
+        if [[ -d $ctx ]]; then
+            command mkdir -p -- "$FAKE_DOCKER_CONTEXT_COPY"
+            command cp -R -- "$ctx/." "$FAKE_DOCKER_CONTEXT_COPY/" 2>/dev/null
+        fi
+    fi
+    fail_if_requested build
+    exit 0
+    ;;
+
+start|restart|stop|logs|*)
     fail_if_requested "$1"
     exit 0
     ;;
