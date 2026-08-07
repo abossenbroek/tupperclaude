@@ -9,7 +9,7 @@ both Apple Silicon and Intel, and an optional per-directory
 [Requirements](INSTALL.md#requirements). **Prerelease: version `0.1.0-dev`.** Interfaces
 and command names may still change between commits.
 
-Your working directory is bind-mounted at the same absolute path, so edits are live on
+Your working directory is bind-mounted at the same absolute path; edits are live on
 both sides. Everything else — installed packages, stray processes, `rm -rf` accidents —
 stays in the container.
 
@@ -38,7 +38,7 @@ claude-docker-arm
 ```
 
 The build comes **before** `claude-docker-doctor` on purpose: doctor treats the base
-image for your own architecture as a *required* check, so run before the build it prints
+image for your own architecture as a *required* check: run before the build, it prints
 a `FAIL` row for it and exits non-zero. That is doctor working correctly, not a broken
 install — but it makes a poor first impression when it is the first command you type.
 
@@ -72,8 +72,8 @@ in there as usual. After that:
   under your [`home`](#home) override) and are **shared by every sandbox using that state
   root**, in every directory — you sign in once, not once per project;
 - the Playwright variant has its own state root and therefore its own credentials file,
-  so it asks once too;
-- `claude-docker-clean` never removes either file, so rebuilding an image does not cost
+  and it asks once too;
+- `claude-docker-clean` never removes either file; rebuilding an image does not cost
   you the login. To clear it deliberately, delete the file.
 
 ### Build cost
@@ -136,7 +136,7 @@ command table.
 | `claude-ts-ensure` | (plumbing) Bring up / repair the Tailscale sidecar |
 
 The dispatcher takes `arm64` or `amd64` (and tolerates the bare `arm` / `amd` spellings,
-so nothing you read off the screen is rejected). Everywhere else — the image tags, the
+and nothing you read off the screen is rejected). Everywhere else — the image tags, the
 `linux/arm64` platform, doctor's table — the spelling is `arm64`; only the command names
 themselves say `arm`.
 
@@ -151,11 +151,11 @@ directory to `$fpath` at plugin-load time. oh-my-zsh users get it automatically,
 oh-my-zsh runs `compinit` after plugins load. If you load the plugin by hand, make sure
 your own `compinit` call comes *after* the `source` line.
 
-The Playwright variant builds **on top of** the matching base image (same arch), so
-build the base image first. It adds `--ipc=host` at run time, which Playwright's own
+The Playwright variant builds **on top of** the matching base image (same arch); build
+the base image first. It adds `--ipc=host` at run time, which Playwright's own
 docs recommend for Chromium — the base image's `tini` entrypoint already handles zombie
-reaping, so no extra `--init` flag is needed. It also uses its own state root and its own
-Tailscale node (sidecar prefix `claude-ts-pw-`), so a Playwright sandbox and a base
+reaping, and no extra `--init` flag is needed. It also uses its own state root and its own
+Tailscale node (sidecar prefix `claude-ts-pw-`), which lets a Playwright sandbox and a base
 sandbox can run in the same directory without colliding.
 
 ## Usage
@@ -211,10 +211,10 @@ The sandbox is not a byte-identical Claude Code environment. The deliberate diff
   the launcher starts `claude --teammate-mode in-process`. Teammates therefore run in the
   same process rather than as separate sessions.
 - **Worktrees are shared with the host.** `$HOME/.claude/worktrees` is bind-mounted at
-  the same path inside the container, so worktrees created in one are visible in the
+  the same path inside the container; worktrees created in one are visible in the
   other.
 - **mise configs in the working directory are pre-trusted.** `MISE_TRUSTED_CONFIG_PATHS`
-  is set to `$PWD/mise.toml:$PWD/.mise.toml:$PWD/.mise/config.toml`, so `mise` never
+  is set to `$PWD/mise.toml:$PWD/.mise.toml:$PWD/.mise/config.toml`, and `mise` never
   prompts for trust inside the sandbox. It covers the working directory only.
 - **Teams/tasks/projects state is per-directory**, not global — see
   [How it works](#how-it-works).
@@ -223,7 +223,7 @@ The sandbox is not a byte-identical Claude Code environment. The deliberate diff
 - **Permission prompts behave normally through the `claude-docker-*` commands, but the
   image's own default does not.** The image inherits
   `CMD ["claude","--dangerously-skip-permissions"]` from the Docker-published base image.
-  Every run command **overrides** that command line, so a tupperclaude sandbox starts
+  Every run command **overrides** that command line; a tupperclaude sandbox starts
   `claude --teammate-mode in-process` and prompts as usual. Anyone who runs
   `docker run claude-code-full-arm64` by hand, with no command of their own, gets the
   permission bypass instead.
@@ -291,7 +291,7 @@ export CLAUDE_DOCKER_OP_TS_REF='op://Private/Tailscale/authkey'
 ### `aws`
 
 - **zstyle:** `zstyle ':omz:plugins:tupperclaude' aws <on|off>` (boolean: `zstyle -t`
-  semantics, so `true`/`yes`/`on`/`1` are all true; `claude-docker-configure` writes
+  semantics: `true`/`yes`/`on`/`1` are all true; `claude-docker-configure` writes
   `aws 'on'`)
 - **env var:** `CLAUDE_DOCKER_INCLUDE_AWS`
 - **default:** off
@@ -304,7 +304,7 @@ export CLAUDE_DOCKER_INCLUDE_AWS=1
 claude-docker-build-arm
 ```
 
-At run time `~/.aws` is mounted read-only and copied into the container, so your
+At run time `~/.aws` is mounted read-only and copied into the container, and your
 existing profiles and SSO config work regardless of this option.
 
 ### `home`
@@ -315,7 +315,7 @@ existing profiles and SSO config work regardless of this option.
 
 Host state root: per-directory instance state, the shared cargo cache, and the Claude
 credentials file. The Playwright variant always uses this path with a `-playwright`
-suffix (e.g. `~/.config/claude-docker-playwright`), so overriding `home` relocates both
+suffix (e.g. `~/.config/claude-docker-playwright`); overriding `home` relocates both
 trees together and they can never collapse onto each other. It applies to the
 `network=tailscale` path too — the sidecar's generated `resolv.conf` is written under
 this root.
@@ -391,8 +391,8 @@ your forwarded SSH agent and copies of `~/.ssh`, `~/.config/gh`, `~/.config/gclo
 have exported, and still has read-write access to `$PWD` and `~/.claude/worktrees`.
 The threat it stops is *escape to the host*, not *access to your credentials*.
 
-`--group-add 0` is passed only when the socket is actually mounted — gid 0 exists so
-the container's user can read it, and it is dropped along with the mount when this
+`--group-add 0` is passed only when the socket is actually mounted — gid 0 exists to let
+the container's user read it, and it is dropped along with the mount when this
 option is off.
 
 ### `TS_AUTHKEY`
@@ -415,7 +415,7 @@ to go with zero setup.
 **`network=tailscale`** gives each working directory its own persistent Tailscale
 sidecar container (`claude-ts-<mangled-path>`, or `claude-ts-pw-<mangled-path>` for the
 Playwright variant). The Claude container joins that sidecar's network namespace with
-`--network=container:...`, so it inherits the tunnel without needing `NET_ADMIN` or
+`--network=container:...`, inheriting the tunnel without needing `NET_ADMIN` or
 `/dev/net/tun` itself — the sidecar holds the privileges, the Claude container stays
 unprivileged.
 
@@ -426,7 +426,7 @@ genuinely
 server keeps its `100.x` address and still reports `BackendState=Running`, while a
 container joining its netns silently gets a tailnet that resolves nothing. When that is
 detected it restarts the sidecar, which re-establishes the netmap. The node identity
-lives in a named volume, so this does not churn your Tailscale admin console.
+lives in a named volume; this does not churn your Tailscale admin console.
 
 If the tailnet degrades *during* a session, restarting the sidecar will not heal the
 running container — its network namespace goes stale. Exit and relaunch; the launch path
@@ -436,16 +436,16 @@ repairs the sidecar.
 
 Only needed for `network=tailscale`. The sidecar needs a Tailscale auth key **once**,
 when the node is first created. After that the node identity lives in a Docker named
-volume and is reused, so the key is not read again unless you delete that volume.
+volume and is reused; the key is not read again unless you delete that volume.
 
 Use a **reusable, tagged, ephemeral-off** key. Mint one at
 <https://login.tailscale.com/admin/settings/keys>.
 
 - **Reusable**, because you get one node per working directory — a single-use key
   authenticates the first one and then leaves every later directory failing to come up.
-- **Tagged** (e.g. `tag:claude-docker`), so you can write ACLs that scope what these
-  sandboxes can reach, and so the nodes don't expire against your user's key expiry.
-- **Ephemeral off**, so a node keeps its identity across restarts instead of churning
+- **Tagged** (e.g. `tag:claude-docker`), letting you write ACLs that scope what these
+  sandboxes can reach, and keeping the nodes from expiring against your user's key expiry.
+- **Ephemeral off**, and a node keeps its identity across restarts instead of churning
   your admin console.
 
 #### Option 1 — plain environment variable
@@ -496,7 +496,7 @@ only read at the moment the sidecar is created.
    export CLAUDE_DOCKER_OP_TS_REF='op://Private/Tailscale/authkey'
    ```
 
-The reference is not a secret, so it is safe in a dotfiles repo.
+The reference is not a secret; it is safe in a dotfiles repo.
 
 If the vault is locked or signed out, neither command misreports it as a missing key:
 `claude-docker-doctor` fails its `op-signin` row with `op signin` as the fix, and
@@ -505,7 +505,7 @@ you at `op read '<your ref>'` to show the underlying error.
 
 #### Option 3 — another password manager
 
-`TS_AUTHKEY` takes precedence over the 1Password path, so any manager with a CLI works
+`TS_AUTHKEY` takes precedence over the 1Password path, and any manager with a CLI works
 by exporting it. Wrap the run command in a shell function in `~/.zshrc`:
 
 ```zsh
@@ -540,23 +540,23 @@ own login, entirely separate from the host's — see
 
 **Host credentials.** Host credential stores (`~/.ssh`, `gh`, `gcloud`, Linear, Pulumi, `~/.aws`)
 are mounted read-only at `/run/host-*` and copied to their real locations at container
-startup, so the container can modify them freely without ever writing to your host
+startup, and the container can modify them freely without ever writing to your host
 files. Only paths that actually exist are mounted — a bind mount of a missing path would
-make Docker create a root-owned empty directory on the host, so tupperclaude checks
+make Docker create a root-owned empty directory on the host; tupperclaude checks
 first. A Pulumi access token is derived from the credentials file when
-`PULUMI_ACCESS_TOKEN` isn't already set, so both the CLI and the Pulumi MCP server
+`PULUMI_ACCESS_TOKEN` isn't already set, and both the CLI and the Pulumi MCP server
 authenticate.
 
 **SSH agent.** Docker Desktop for Mac synthesises the forwarded agent socket at
-`/run/host-services/ssh-auth.sock`, which is mounted into the container so `git push`
+`/run/host-services/ssh-auth.sock`, which is mounted into the container to let `git push`
 over SSH works. Other engines do not provide it — see [Known limitations](#known-limitations).
 
 **Git worktrees.** If the working directory is a git worktree, the main checkout is also
-mounted at its own path so git can follow the `.git` file's gitdir pointer.
+mounted at its own path to let git follow the `.git` file's gitdir pointer.
 
 **Shared worktree directory.** `~/.claude/worktrees` — Claude Code's own worktree
 directory on the host — is created if missing and mounted at the same path inside the
-container, so a worktree made in the sandbox is visible on the host and the reverse. It is
+container; a worktree made in the sandbox is visible on the host and the reverse. It is
 shared, not per-sandbox, and `claude-docker-clean` never touches it.
 
 ## Cleaning up
@@ -576,7 +576,7 @@ suggests**. By default it:
 
 It does **not** remove per-directory state, and it never touches the Docker-only Claude
 credentials at `~/.config/claude-docker*/.credentials.json` (or the equivalent under your
-[`home`](#home) override) — so a teardown does not cost you the sandbox login.
+[`home`](#home) override) — a teardown therefore does not cost you the sandbox login.
 
 It prints the full plan first — every container by directory, image tag with its size,
 and volume — and asks for confirmation. Anything costly upgrades the prompt from a
@@ -622,7 +622,7 @@ Per-directory state accumulates forever and nothing removes it by default — no
 path, not `claude-docker-clean` without `--state`. Removing it also removes each
 sandbox's own history, which is why it is opt-in.
 
-`docker rmi` only touches the `:latest` tag, so any other tag you pushed onto the same
+`docker rmi` only touches the `:latest` tag; any other tag you pushed onto the same
 repository (a `pre-zsh-port` style backup, say) survives; `claude-docker-clean` lists
 those as preserved rather than leaving you to discover them.
 
@@ -665,13 +665,13 @@ below, and both are worth reading before you conclude the image is pinned end to
 - apt repositories are pinned to a vendor keyring (`signed-by=`)
 - npm packages are pinned exactly and installed with `--ignore-scripts` **wherever the
   package permits it**, which blocks the most common npm supply-chain vector
-- every `RUN` executes under `bash -o pipefail`, so a failed download in a pipeline fails
+- every `RUN` executes under `bash -o pipefail`: a failed download in a pipeline fails
   the build instead of feeding an empty file to the next stage
 
 Five deliberate exceptions, each documented again at its own layer:
 
 1. **Claude Code** is neither version-pinned nor checksum-verified: it tracks the
-   `latest` channel by design so the image matches a freshly upgraded host, and it is
+   `latest` channel by design to keep the image matching a freshly upgraded host, and it is
    installed through the vendor's own `curl https://claude.ai/install.sh | bash`
    bootstrap — the one such pipe in the file.
 2. **aws-cli** (optional) has no vendor-published checksum file; AWS publishes a GPG
@@ -683,7 +683,7 @@ Five deliberate exceptions, each documented again at its own layer:
 4. **uv** is a `COPY --from` an immutable image digest rather than an `ARG` + `sha256`.
    That is stronger, not weaker — the digest covers the whole multi-arch manifest.
 5. **bun** is the one npm package installed *without* `--ignore-scripts`
-   (`npm install -g bun@1.3.14`): its postinstall is what fetches the platform binary, so
+   (`npm install -g bun@1.3.14`): its postinstall is what fetches the platform binary, and
    suppressing lifecycle scripts would install nothing usable. The version is pinned
    exactly, but its install scripts do run. Every other global npm package —
    `typescript`, `typescript-language-server`, `pyright`, `svelte-language-server`,
@@ -706,7 +706,7 @@ container that no Dockerfile in this repo builds, and it is pinned to nothing:
   kernel-mode networking needs them. The Claude container itself stays unprivileged and
   merely joins the sidecar's network namespace — the privileges are concentrated here, in
   the container you did not build.
-- Your **Tailscale auth key is passed to it in its environment** (`-e TS_AUTHKEY=…`), so
+- Your **Tailscale auth key is passed to it in its environment** (`-e TS_AUTHKEY=…`), and
   it is visible to `docker inspect` on that container. See also
   [API keys are visible in the process list](#api-keys-are-visible-in-the-process-list).
 
@@ -721,18 +721,18 @@ opt-in image rather than the default:
 
 - `playwright install chromium` downloads a per-arch Chromium build from a revision
   embedded in the library. There is **no vendor-published checksum** for those builds and
-  no supported way to hand Playwright a pre-verified binary, so the browser is downloaded
+  no supported way to hand Playwright a pre-verified binary, and the browser is downloaded
   and executed on TLS trust alone. This is the weakest link in the image.
 - `npx --yes playwright@$PWVER` executes whatever the npm registry serves for that
   version. The version is exact, but no integrity hash of ours is checked.
 - `$PWVER` is resolved live from `npm view @playwright/mcp@X dependencies.playwright`
-  rather than hardcoded, so the MCP and the library stay in lockstep from one pinned
-  source. The lookup is guarded, so an empty result fails the build instead of installing
+  rather than hardcoded, keeping the MCP and the library in lockstep from one pinned
+  source. The lookup is guarded: an empty result fails the build instead of installing
   `playwright@`.
 
 What *is* pinned: `@playwright/mcp` to an exact version (`ARG
 PLAYWRIGHT_MCP_VERSION=0.0.79`, referenced by the dependency install, the browser install
-and the `mcpServers` registration so the three cannot drift), the Playwright library
+and the `mcpServers` registration to keep the three from drifting), the Playwright library
 version derived from it, and the base image via `BASE_IMAGE`. As in the base image, npm
 installs here use `--ignore-scripts` where the package permits it — `playwright install
 chromium` is not an npm lifecycle script at all, and is run explicitly afterwards.
@@ -745,7 +745,7 @@ published checksum file:
 | Component | Where the checksum comes from |
 | --- | --- |
 | base image | `docker buildx imagetools inspect docker/sandbox-templates:claude-code` — take the top-level index digest (it must list both `linux/amd64` and `linux/arm64`) |
-| composer | download `https://getcomposer.org/download/<ver>/composer.phar` and record `shasum -a 256` of it as `COMPOSER_SHA256`. Deliberately hardcoded rather than fetched at build time: the same origin serves the phar and any hash that would check it, so a compromised origin would pass its own check |
+| composer | download `https://getcomposer.org/download/<ver>/composer.phar` and record `shasum -a 256` of it as `COMPOSER_SHA256`. Deliberately hardcoded rather than fetched at build time: the same origin serves the phar and any hash that would check it, and a compromised origin would pass its own check |
 | yq | `https://github.com/mikefarah/yq/releases/download/<ver>/checksums` — SHA-256 is column 19 (see the `checksums_hashes_order` file) |
 | tailscale | `https://pkgs.tailscale.com/stable/tailscale_<ver>_<arch>.tgz.sha256` |
 | pulumi | `https://github.com/pulumi/pulumi/releases/download/v<ver>/pulumi-<ver>-checksums.txt` |
@@ -767,13 +767,13 @@ published checksum file:
 
 - **A non-Docker-Desktop engine mostly works, but loses SSH agent forwarding — and the
   tooling is more alarmed about it than it needs to be.** OrbStack and Colima run the
-  images fine, but neither synthesises `/run/host-services/ssh-auth.sock`, so `git push`
+  images fine, but neither synthesises `/run/host-services/ssh-auth.sock`, and `git push`
   over SSH inside the sandbox fails. Nothing else is affected. But `ssh-agent` is a
-  **required** check, so on those engines:
+  **required** check; on those engines:
 
   - `claude-docker-doctor` prints a `FAIL` row for it and **exits non-zero**, however
     healthy the rest of your setup is;
-  - `claude-docker-configure` counts it among its failed prerequisites, so instead of
+  - `claude-docker-configure` counts it among its failed prerequisites, and instead of
     offering to run the build for you it prints *"Prerequisites are not satisfied yet —
     fix the FAIL lines above, then:"* followed by `claude-docker-doctor` and the right
     build command for your architecture. You still get the command; what you lose is the
@@ -787,11 +787,11 @@ published checksum file:
 
 - **`@playwright/mcp` is pinned to exactly 0.0.79, and 0.0.79 is a floor you cannot go
   below rather than a version anyone preferred.** The base image tracks Ubuntu 26.04,
-  which no published Playwright yet lists in its browser-support allowlist, so
+  which no published Playwright yet lists in its browser-support allowlist, and
   `playwright install chromium` refuses with *"Playwright does not support chromium on
   ubuntu26.04-arm64"*. The image sets `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1` to
   bypass that check — but Playwright releases before roughly 1.62 **ignore that variable
-  entirely**, so the previous pin (0.0.75, which resolves to playwright 1.61.0-alpha)
+  entirely**, and the previous pin (0.0.75, which resolves to playwright 1.61.0-alpha)
   fails no matter what it is set to. Bumping the pin upward is fine; going below 0.0.79
   cannot work until Playwright adds Ubuntu 26.04, at which point the environment variable
   can be dropped instead. This is an allowlist gap, not a real incompatibility: the
@@ -799,7 +799,7 @@ published checksum file:
   `claude-code-full-playwright-arm64` build has been verified end to end to do. No exact
   Chromium build number is quoted here: it is whatever revision the pinned Playwright
   library resolves to, and the two places that named one — this README and a comment in
-  `docker/Dockerfile.playwright` — disagreed, so both were untrustworthy.
+  `docker/Dockerfile.playwright` — disagreed, leaving both untrustworthy.
 
 ## Troubleshooting
 
@@ -817,7 +817,7 @@ first. See [Build cost](#build-cost).
 
 **`tupperclaude: error: a sandbox is already running for <dir> …`** — the line goes on to
 name the arch, the variant and the container. One container per
-directory and variant, so a second `claude-docker-arm` in the same directory would
+directory and variant; a second `claude-docker-arm` in the same directory would
 collide on the container name. This is the ordinary second-terminal case. Nothing has
 been changed and the live session is untouched: use `claude-docker-shell` for another
 shell in it, or `docker attach <container>` to rejoin its tmux session. To run a *second*
@@ -848,7 +848,7 @@ are valid.
 SSH agent forwarding still works. See [Known limitations](#known-limitations).
 
 **`tupperclaude: error: claude-docker-configure needs an interactive terminal`** — the
-wizard reads answers from the terminal, so it cannot run from a pipe, a script or CI.
+wizard reads answers from the terminal and cannot run from a pipe, a script or CI.
 Run it directly, or set the `zstyle` options by hand — [Configuration](#configuration)
 documents each one, and the same list ships as commented examples in
 `zsh/templates/tupperclaude.zsh` inside the plugin clone (where that clone lives depends
@@ -860,9 +860,9 @@ front.
 
 **`tupperclaude: error: refusing --yes: …`** — the rest of that line is assembled from
 what is actually at risk, naming the sandboxes by working directory and the sidecars by
-container name, so it is not a fixed sentence. Exit those sessions, narrow the sweep
+container name; it is not a fixed sentence. Exit those sessions, narrow the sweep
 (`claude-docker-clean --volumes` touches no container), or add `--force`. It fires on
-running **sandboxes** as well as sidecars — so `network=default` users, who have no
+running **sandboxes** as well as sidecars — `network=default` users, who have no
 sidecars at all, get it too — and on `--state` while a running sandbox has that state
 bind-mounted, even when no container is being removed. See [Cleaning up](#cleaning-up).
 

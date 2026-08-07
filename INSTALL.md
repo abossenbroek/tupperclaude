@@ -8,7 +8,7 @@ Command names and options may still change.
 - macOS with **Docker Desktop** (the run commands rely on Docker Desktop's Linux VM for
   `/dev/net/tun` when using `network=tailscale`, and on its ssh-agent forwarding socket
   at `/run/host-services/ssh-auth.sock`). OrbStack and Colima run the images, but
-  neither provides that socket, so SSH agent forwarding — and therefore `git push` over
+  neither provides that socket; SSH agent forwarding — and therefore `git push` over
   SSH inside the sandbox — will not work. On those engines `claude-docker-doctor` exits
   non-zero, and `claude-docker-configure` still prints the build command but will not
   offer to run it for you; build and run anyway, only git-over-SSH is affected. See
@@ -38,7 +38,7 @@ plugin; it's why the ordinary clone-into-plugins-dir workflow below just works.
 ## Homebrew
 
 A formula, not a cask — casks install pre-built macOS artifacts, and this is a zsh
-plugin installed from source. There is no tagged release yet, so it is `--HEAD` only:
+plugin installed from source. There is no tagged release yet, making it `--HEAD` only:
 
 ```zsh
 brew tap abossenbroek/tupperclaude
@@ -50,7 +50,7 @@ The `brew trust` step is not optional and not a formality: without it Homebrew 6
 with `Refusing to load formula ... from untrusted tap`. It is asking you to confirm you
 mean to run a third party's install script, which is a fair question.
 
-Homebrew installs the files but cannot edit your `~/.zshrc`, so add the source line
+Homebrew installs the files but cannot edit your `~/.zshrc`; add the source line
 yourself (`brew info tupperclaude` repeats it):
 
 ```zsh
@@ -80,7 +80,7 @@ Then `exec zsh`.
 
 ## zinit
 
-zinit sources a specific file rather than resolving a plugin directory convention, so
+zinit sources a specific file rather than resolving a plugin directory convention;
 point it at the root shim:
 
 ```zsh
@@ -89,7 +89,7 @@ zinit light abossenbroek/tupperclaude
 
 zinit's default `as"plugin"` mode already discovers `*.plugin.zsh` at a repo root, which
 this repo has. Do **not** add `as"program"` — that treats the repo as a binary, puts its
-directory on `$PATH` and never sources anything, so no command is defined.
+directory on `$PATH` and never sources anything, leaving no command defined.
 
 ## antigen
 
@@ -120,9 +120,9 @@ claude-docker-doctor      # verify everything, now that the image exists
 claude-docker-arm
 ```
 
-`claude-docker-configure` offers to run the build for you at the end, so you may not need
+`claude-docker-configure` offers to run the build for you at the end; you may not need
 to type it. Run `claude-docker-doctor` **after** the build, not before: it treats the base
-image for your architecture as a required check, so on a machine that has not built yet
+image for your architecture as a required check, which means on a machine that has not built yet
 it reports a `FAIL` for it and exits non-zero — correct behaviour, but an alarming first
 command.
 
@@ -134,7 +134,7 @@ sandbox, which keeps its own credentials — see
 
 `tupperclaude` (bare) prints the version and the full command table. Every
 `claude-docker-*` command, `claude-ts-ensure` and `tupperclaude` itself take
-`-h`/`--help`; on the run commands that help belongs to the wrapper, so use
+`-h`/`--help`; on the run commands that help belongs to the wrapper; use
 `claude-docker-arm -- --help` to reach `claude`'s own.
 
 See [README.md](README.md) for the full command table and configuration reference, and
@@ -207,5 +207,5 @@ It also runs in CI on every push and pull request. Run it before and after any p
    ```
 
    They must be two separate commands. Docker ANDs filters of different keys, and sidecars
-   carry no `tupperclaude.dir` label — so combining them into one command always prints
+   carry no `tupperclaude.dir` label — combining them into one command therefore always prints
    nothing and would give you a false all-clear.
