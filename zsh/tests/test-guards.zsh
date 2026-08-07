@@ -127,7 +127,12 @@ check "no auth key: _claude_docker_run (tailscale network) returns non-zero" $?
 # --- claude-docker-shell with nothing running --------------------------------
 
 if require_fn claude-docker-shell; then
-    FAKE_DOCKER_PS=''  # nothing running
+    # Nothing running. The fake docker is a separate process, so it reads these
+    # from the environment only — a plain (unexported) assignment here would not
+    # reach it. Unset rather than set empty: the shim ignores an empty
+    # FAKE_DOCKER_PS and falls through to the DB, so emptying it alone would
+    # leave whatever a prior file exported in force.
+    unset FAKE_DOCKER_PS FAKE_DOCKER_PS_DB
     out="$(claude-docker-shell 2>&1 1>/dev/null)"
     rc=$?
     (( rc != 0 ))
