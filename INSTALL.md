@@ -41,9 +41,14 @@ A formula, not a cask — casks install pre-built macOS artifacts, and this is a
 plugin installed from source. There is no tagged release yet, so it is `--HEAD` only:
 
 ```zsh
-brew tap abossenbroek/tap
+brew tap abossenbroek/tupperclaude
+brew trust abossenbroek/tupperclaude   # Homebrew 6 refuses third-party taps by default
 brew install --HEAD tupperclaude
 ```
+
+The `brew trust` step is not optional and not a formality: without it Homebrew 6 stops
+with `Refusing to load formula ... from untrusted tap`. It is asking you to confirm you
+mean to run a third party's install script, which is a fair question.
 
 Homebrew installs the files but cannot edit your `~/.zshrc`, so add the source line
 yourself (`brew info tupperclaude` repeats it):
