@@ -9,8 +9,11 @@
 # arguments; the naming does the grouping.
 #
 # Loaded by prepending zsh/completions to $fpath at plugin-load time. This file
-# never calls compinit — oh-my-zsh (or the user's .zshrc) runs it once, after
-# plugins have had their chance to extend $fpath.
+# never calls compinit; how it gets bound depends on which ran first. A .zshrc
+# that sources the plugin and runs compinit afterwards picks this file up off
+# $fpath unaided. oh-my-zsh runs compinit BEFORE sourcing any plugin, so there
+# zsh/tupperclaude.zsh binds it explicitly with compdef — see the comment above
+# that call for why the $fpath prepend alone is not enough.
 
 # `--` cannot be written as an _arguments optspec (it is _arguments' own
 # end-of-options marker), so the run wrappers are completed by hand.
