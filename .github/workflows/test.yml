@@ -47,15 +47,23 @@ jobs:
       # The fake shim is also the safety boundary: it is first on $PATH, and
       # every function calls `command docker`, so nothing in this suite can
       # build an image or remove a container even where a real daemon exists.
-      - name: Syntax-check every zsh file
-        run: |
-          set -e
-          for f in zsh/tupperclaude.zsh tupperclaude.plugin.zsh \
-                   zsh/functions/* zsh/templates/*.zsh \
-                   zsh/tests/*.zsh zsh/tests/lib/*.zsh zsh/tests/fake-bin/docker zsh/tests/fake-bin/sleep \
-                   zsh/completions/_claude-docker; do
-            zsh -n "$f" || { echo "zsh -n failed: $f"; exit 1; }
-          done
+      # Via make, not an inlined loop: the file list lives in the Makefile so
+      # `make lint` and CI cannot disagree about what "every zsh file" means.
+      # This is also exactly what the pre-commit hook runs.
+      - name: make check (lint + suite)
+        run: make check
 
-      - name: Run zsh test suite
-        run: zsh zsh/tests/run-tests.zsh
+  # The suite above sources the plugin by absolute path under `zsh -f`, which
+  # never reads a .zshrc and never touches the completion system. Installing the
+  # way users actually install — into a real oh-my-zsh, in a real shell — is a
+  # different test, and it is the one that caught the completion binding bug.
+  # Linux only: it needs a Docker daemon, which the macOS runners do not have.
+  install-matrix:
+    runs-on: ubuntu-latest
+    name: install matrix (containers)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: make test-install
+        run: make test-install

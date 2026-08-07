@@ -1,0 +1,30 @@
+#!/bin/sh
+# tupperclaude pre-commit gate — `make check` (lint + the zsh suite).
+#
+# Install with `make hooks` (sets core.hooksPath); bypass a single commit with
+# `git commit --no-verify` when you genuinely need to.
+#
+# Deliberately NOT running `make test-install`: those tests build throwaway
+# containers and take minutes. A hook slow enough to be routinely bypassed
+# stops being a gate. The container matrix runs in CI and via `make
+# test-install`.
+
+set -e
+
+if ! command -v zsh >/dev/null 2>&1; then
+    echo "pre-commit: zsh not found — cannot run the test suite." >&2
+    exit 1
+fi
+
+# Run against the repo root regardless of the subdirectory git was invoked from.
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+
+echo "pre-commit: make check"
+if ! make check; then
+    echo "" >&2
+    echo "pre-commit: 'make check' failed — commit aborted." >&2
+    echo "  make check          # reproduce" >&2
+    echo "  git commit --no-verify   # bypass, if you mean it" >&2
+    exit 1
+fi
