@@ -69,6 +69,37 @@ if [[ ! -t 0 || ! -t 1 ]]; then
     return 1
 fi
 
+# Where tupperclaude is installed. $TUPPERCLAUDE_DIR is set by the plugin shim
+# (zsh/tupperclaude.zsh), but this function is autoloadable on its own, and a
+# colleague pointing $fpath at zsh/functions without sourcing the shim is the
+# first thing that happens on a shared machine. Unset, "$TUPPERCLAUDE_DIR/zsh/
+# templates/..." collapsed to the absolute path "/zsh/templates/..." — a
+# nonsense path at the filesystem root, blamed on the user's installation, with
+# no mention of the variable actually at fault.
+#
+# $0 inside an autoloaded function is the function NAME, not a path, so the
+# usual ${0:A:h} idiom would anchor to $PWD. $functions_source holds the file
+# this function was defined in, which is the real answer — the same idiom
+# _claude_docker_ctx already uses.
+local tc_dir=${TUPPERCLAUDE_DIR:-${${functions_source[claude-docker-configure]:-}:A:h:h:h}}
+local template="$tc_dir/zsh/templates/tupperclaude.zsh"
+
+# Checked HERE, before the banner and the questions, rather than at the point of
+# use in section 3. There is no answer this wizard could ask for that survives a
+# missing template, so asking first only collects four answers and throws them
+# away. $functions_source is not a guarantee — under `zsh -c` it is the bare
+# string "zsh" — so a resolution that looks plausible and is wrong is the case
+# that has to fail well, and this is the check that catches it.
+if [[ ! -r $template ]]; then
+    # Everything explanatory belongs in the message: _claude_docker_err prints
+    # each remaining argument as an indented command to paste, so prose in that
+    # position reads as something to run.
+    _claude_docker_err \
+        "template not found at $template — tupperclaude resolved to $tc_dir${TUPPERCLAUDE_DIR:+ (from \$TUPPERCLAUDE_DIR)}. The template ships with the plugin, so either the checkout is incomplete or that directory is not it" \
+        "export TUPPERCLAUDE_DIR=/path/to/tupperclaude"
+    return 1
+fi
+
 print "tupperclaude setup wizard"
 print ""
 
@@ -161,13 +192,8 @@ print -r -- "  -> aws = $( (( aws_enabled )) && print on || print off )"
 
 # ---- 3. generate ~/.tupperclaude.zsh from the template ---------------------
 
-local template="$TUPPERCLAUDE_DIR/zsh/templates/tupperclaude.zsh"
-if [[ ! -r $template ]]; then
-    _claude_docker_err "template not found at $template" \
-        "check your tupperclaude installation — this file should ship with the plugin"
-    return 1
-fi
-
+# $template was resolved and checked before the first question — see the top of
+# this file for why it is not done here.
 local checksum
 checksum="$(command shasum "$template" | command awk '{print $1}')"
 

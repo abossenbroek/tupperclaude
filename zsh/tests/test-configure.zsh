@@ -27,6 +27,9 @@ source $TUPPERCLAUDE_TEST_ROOT/tupperclaude.plugin.zsh
 cd -- $TC_TEST_WORKDIR || exit 1
 
 local out='' rc=0 cfg='' wizhome=''
+# Which child pty_wizard runs. Empty means the default one defined below; the
+# $TUPPERCLAUDE_DIR cases point it at a child that never sources the plugin.
+local wiz_child=''
 integer wiz_n=0
 
 require_fn claude-docker-configure || { test_summary; return }
@@ -46,6 +49,31 @@ print -r -l -- \
     'source $TUPPERCLAUDE_TEST_ROOT/tupperclaude.plugin.zsh' \
     'claude-docker-configure "$@"' \
     >$child
+
+# Two more children that do NOT source the plugin shim: $fpath plus autoload and
+# nothing else, which is how a colleague wires this up when they have the repo
+# but have not read the install instructions — and the only setup in which
+# $TUPPERCLAUDE_DIR is not set. `unset` rather than merely not setting it,
+# because the variable is exported by whatever ran the suite.
+local -r child_noshim="$TC_TEST_WORKDIR/wizard-child-noshim.zsh"
+print -r -l -- \
+    '#!/usr/bin/env zsh' \
+    'fpath=($TUPPERCLAUDE_TEST_ROOT/zsh/functions $fpath)' \
+    'autoload -Uz $TUPPERCLAUDE_TEST_ROOT/zsh/functions/*(:t)' \
+    'unset TUPPERCLAUDE_DIR' \
+    'claude-docker-configure "$@"' \
+    >$child_noshim
+
+# The same, but with $TUPPERCLAUDE_DIR pointing at a checkout that is not there
+# — a stale export in someone's .zshrc after moving the repo.
+local -r child_baddir="$TC_TEST_WORKDIR/wizard-child-baddir.zsh"
+print -r -l -- \
+    '#!/usr/bin/env zsh' \
+    'fpath=($TUPPERCLAUDE_TEST_ROOT/zsh/functions $fpath)' \
+    'autoload -Uz $TUPPERCLAUDE_TEST_ROOT/zsh/functions/*(:t)' \
+    'export TUPPERCLAUDE_DIR=/tupperclaude-no-such-checkout' \
+    'claude-docker-configure "$@"' \
+    >$child_baddir
 
 # pty_wizard <home> <answers> [args...] — run the wizard on a pty with $HOME
 # set to <home>, typing <answers>. Prints the transcript path on stdout.
@@ -83,10 +111,10 @@ pty_wizard() {
     {
         if [[ "$(command uname -s)" == Darwin ]]; then
             { print -rn -- "$answers"$'\n\n\n\n'; sleep 2 } | \
-                HOME=$home command script -q /dev/null zsh -f $child "$@" >$transcript 2>&1
+                HOME=$home command script -q /dev/null zsh -f ${wiz_child:-$child} "$@" >$transcript 2>&1
         else
             { print -rn -- "$answers"$'\n\n\n\n'; sleep 2 } | \
-                HOME=$home command script -q -c "zsh -f $child $*" /dev/null >$transcript 2>&1
+                HOME=$home command script -q -c "zsh -f ${wiz_child:-$child} $*" /dev/null >$transcript 2>&1
         fi
     } &
     local spid=$!
@@ -228,6 +256,54 @@ quote_case single-quote "op://Ada's Vault/Tailscale/authkey"
 quote_case backslash 'op://Back\slash Vault/Tailscale/authkey'
 quote_case ampersand 'op://A&B Vault/Tailscale/authkey'
 quote_case quote-backslash-ampersand "op://Ada's A&B\\Vault/Tailscale/authkey"
+
+# ============================================================================
+# $TUPPERCLAUDE_DIR is set by the plugin shim — the wizard must not need it
+# ============================================================================
+#
+# claude-docker-configure is autoloadable on its own, and the colleague who
+# points $fpath at zsh/functions without sourcing zsh/tupperclaude.zsh is the
+# common first-contact case. With $TUPPERCLAUDE_DIR unset the template path
+# collapsed to the absolute "/zsh/templates/tupperclaude.zsh" — and, because the
+# check sat in section 3, only AFTER every question had been asked and answered.
+# The user lost their answers to an error naming a path at the filesystem root
+# and blaming their installation.
+#
+# $0 in an autoloaded function is the function NAME, so the fallback goes
+# through $functions_source, as _claude_docker_ctx does.
+
+wiz_child=$child_noshim
+run_wizard $'1\n1\nop://Ada Vault/Tailscale/authkey\ny\n'
+wiz_child=''
+
+[[ -n $cfg ]]
+check "wizard/no-shim: writes a config with \$TUPPERCLAUDE_DIR unset" $? \
+    "transcript: $out"
+[[ $out != *'/zsh/templates/tupperclaude.zsh'* ]]
+check "wizard/no-shim: no 'template not found' — the directory is resolved, not assumed" $? \
+    "transcript: $out"
+[[ $cfg == *"op-ref 'op://Ada Vault/Tailscale/authkey'"* ]]
+check "wizard/no-shim: the answers still reach the generated config" $? "config: $cfg"
+
+# A $TUPPERCLAUDE_DIR that resolves but points nowhere: $functions_source is not
+# a guarantee either (under `zsh -c` it is the bare string "zsh"), so the failure
+# that matters is a plausible-looking wrong directory. It must name the variable
+# — "check your installation" is true and useless when the installation is fine
+# and a stale export is at fault.
+wiz_child=$child_baddir
+run_wizard $'1\n3\nn\n'
+wiz_child=''
+
+[[ -z $cfg ]]
+check "wizard/bad-dir: an unresolvable TUPPERCLAUDE_DIR writes no config" $? "config: $cfg"
+[[ $out == *TUPPERCLAUDE_DIR* ]]
+check "wizard/bad-dir: the error names TUPPERCLAUDE_DIR as the fix" $? "transcript: $out"
+[[ $out == *'/tupperclaude-no-such-checkout'* ]]
+check "wizard/bad-dir: the error names the directory it resolved" $? "transcript: $out"
+# And it gives up BEFORE collecting answers it is going to throw away.
+[[ $out != *'Network —'* ]]
+check "wizard/bad-dir: fails before asking the first question, not after the last" $? \
+    "transcript: $out"
 
 # ============================================================================
 # defaults, and unrecognised input
