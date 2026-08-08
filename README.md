@@ -300,7 +300,7 @@ export CLAUDE_DOCKER_OP_TS_REF='op://Private/Tailscale/authkey'
   `aws 'on'`)
 - **env var:** `CLAUDE_DOCKER_INCLUDE_AWS`
 - **default:** off
-- **read at:** build time
+- **read at:** build time — and at run time, for the `aws` tmux window
 
 Includes AWS CLI v2 in the image. Off by default to keep the image smaller.
 
@@ -317,12 +317,13 @@ existing profiles and SSO config work regardless of this option.
 - **zstyle:** `zstyle ':omz:plugins:tupperclaude' gcloud <on|off>` (boolean, as `aws`)
 - **env var:** `CLAUDE_DOCKER_INCLUDE_GCLOUD`
 - **default:** off
-- **read at:** build time
+- **read at:** build time — and at run time, for the `gcloud` tmux window
 
 Includes the Google Cloud SDK and `gke-gcloud-auth-plugin` in the image — about
-790 MB, which is why it is off by default. It used to be installed unconditionally;
-an image built before this option existed still carries it, and the run-time
-mismatch warning will say so until you rebuild.
+790 MB, which is why it is off by default. It used to be installed unconditionally, so
+an image built before this option existed still carries it. That image predates the
+`tupperclaude.gcloud` label, so nothing warns about the disagreement — rebuild once to
+bring the image and the option back into step.
 
 With the option off, `/etc/apt/sources.list.d/google-cloud-sdk.list` is never
 written either, so the image holds no third-party apt repository that an in-sandbox

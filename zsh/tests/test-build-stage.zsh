@@ -18,6 +18,9 @@ setopt local_options noksharrays
 
 source $TC_TEST_LIB
 source $TUPPERCLAUDE_TEST_ROOT/tupperclaude.plugin.zsh
+# The tool table lives in _claude_docker_tool, not the shim, so it has to be
+# populated before anything here reads it at file scope.
+_claude_docker_tool list >/dev/null
 
 cd -- $TC_TEST_WORKDIR || exit 1
 
