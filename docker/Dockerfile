@@ -16,7 +16,7 @@
 #   * every RUN uses `bash -o pipefail`, so a failed download in a pipeline fails
 #     the build instead of feeding an empty file to the next stage
 #
-# There are five deliberate exceptions, each documented again at its own layer:
+# There are four deliberate exceptions, each documented again at its own layer:
 #
 #   1. Claude Code (layer 13) is NOT version-pinned and NOT checksum-verified: it
 #      tracks the `latest` channel by design so the image matches a freshly
@@ -35,10 +35,6 @@
 #   4. uv (layer 6) is not an ARG+sha256 pin but a `COPY --from` an immutable
 #      image digest. That is stronger, not weaker: the digest covers the whole
 #      multi-arch manifest.
-#   5. The Google Cloud SDK and the GKE auth plugin (layer 11, optional) come
-#      from a keyring-pinned apt repository, so they carry the repo's signature
-#      rather than a version we pin. apt has no way to express "this exact
-#      version and no other" against a moving repository.
 #
 # Bump ARGs deliberately. To refresh a checksum, take it from the vendor's own
 # published checksum file — see README.md, "Updating pinned versions".
@@ -278,9 +274,8 @@ RUN if [ "$INCLUDE_AWS" = "1" ]; then \
 # written either, so a default image carries no third-party apt repo that an
 # in-sandbox `apt-get install` would silently consult.
 #
-# EXCEPTION 5: these are apt packages, so they carry the repository's signature
-# rather than a version we pin — apt cannot express "this exact version and no
-# other" against a moving repository. The keyring is what is pinned.
+# Apt packages, so the keyring is what is pinned rather than a version — the
+# same policy layer 3 applies to gh, not an exception to it.
 #
 # Safe to pipe: `set -o pipefail` (SHELL, above) propagates a curl failure, and
 # gpg --dearmor rejects empty input rather than writing an empty keyring. The
