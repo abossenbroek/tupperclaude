@@ -24,10 +24,17 @@ Work through the steps in order. Follow these rules the whole way:
 
 RULES
 - Show me each command before you run it.
-- Ask me before you change any file of mine. Always back up ~/.zshrc before editing it.
+- Ask me before you change any file of mine.
+- Before your first edit to ~/.zshrc, back it up with exactly:
+    cp ~/.zshrc ~/.zshrc.tupperclaude-bak-$(date +%Y%m%d%H%M%S)
+  Show me the backup path afterwards.
+- Before adding any line to a file, grep for it first. If it is already there, change
+  nothing. Every step here is safe to run twice; keep it that way.
 - Ask me before starting the image build. It takes about 15 minutes and 9 GB of disk.
 - Never invent a secret. If a step needs an auth key or a password-manager reference,
   stop and ask me for it.
+- Never write a secret value into any file. If I give you a key, tell me where to
+  export it and stop — do not put it in ~/.zshrc or ~/.tupperclaude.zsh.
 - If something fails, stop and show me the exact error. Do not work around it.
 - Do not run `claude-docker-configure`. It is an interactive wizard that needs a real
   terminal and will refuse to run from a tool call. Ask me the questions yourself
@@ -37,17 +44,31 @@ STEP 1 — Check what I already have
 
 Run these and show me the results as a short table:
 
+  uname -s
+  uname -m
   docker --version
   docker info >/dev/null 2>&1 && echo "docker daemon: running" || echo "docker daemon: NOT running"
+  docker info --format '{{.OperatingSystem}}' 2>/dev/null
   zsh --version
   jq --version
   git --version
-  uname -m
+  test -f ~/.claude.json && echo "claude.json: present" || echo "claude.json: MISSING"
+  df -g / | tail -1
 
 Then tell me whether my CPU is arm64 (Apple Silicon) or amd64 (Intel). I need that later.
 
-Docker and jq are required. If either is missing, stop and tell me how to install it.
-If the Docker daemon is not running, tell me to start Docker Desktop.
+Stop and tell me how to fix it if any of these is true:
+
+  - `uname -s` is not Darwin. tupperclaude is macOS-only today.
+  - Docker or jq is missing.
+  - The Docker daemon is not running — I need to start Docker Desktop.
+  - `~/.claude.json` is missing. Fix: I run Claude Code once on the host, so it
+    creates that file. The setup check below requires it.
+  - Less than about 12 GB free on /.
+
+Warn me, but continue, if the Docker OperatingSystem is not "Docker Desktop"
+(OrbStack and Colima report something else). tupperclaude mounts Docker Desktop's
+ssh-agent socket at a fixed path, and that check will FAIL on other engines.
 
 STEP 2 — Find my zsh plugin manager
 
@@ -68,9 +89,13 @@ STEP 3 — Install the plugin
 Use the option matching my manager. Show me the exact edit and wait for my approval.
 
   oh-my-zsh:
-    git clone https://github.com/abossenbroek/tupperclaude \
-      ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/tupperclaude
-    then add tupperclaude to the plugins=(...) line in ~/.zshrc
+    first resolve the custom directory in zsh, where ZSH_CUSTOM is actually set:
+      zsh -i -c 'print -r -- ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}'
+    then:
+      git clone https://github.com/abossenbroek/tupperclaude <that>/plugins/tupperclaude
+    then add tupperclaude to the existing plugins=(...) line in ~/.zshrc.
+    Edit that line in place — do not add a second plugins=() line, and do not
+    reformat the array. A malformed plugins=() breaks my login shell.
 
   zinit:      add to ~/.zshrc:  zinit light abossenbroek/tupperclaude
   antidote:   add to my plugins file:  abossenbroek/tupperclaude
@@ -97,14 +122,25 @@ brackets if I am unsure.
      - default: plain Docker networking. Simpler, no Tailscale account needed.
 
   2. Only if I chose tailscale — how should the auth key be supplied?
-     - I will export TS_AUTHKEY myself, or
-     - a 1Password reference such as op://Private/Tailscale/authkey
-     Do NOT make up a key. Ask me for the exact value or reference.
+     - a 1Password reference such as op://Private/Tailscale/authkey, or
+     - I export TS_AUTHKEY myself, in my own shell.
+     Do NOT make up a key, and do NOT write one into a file. If I pick the second
+     option, tell me to run `export TS_AUTHKEY=...` in my own terminal and note that
+     the check in STEP 5 will still report authkey as FAIL for you, because your
+     shell cannot see what I exported in mine. That one is expected.
+     If I pick the 1Password option, check I have the CLI: `command -v op`. Without
+     it the same check fails.
 
   3. Include the AWS CLI in the image? [no]
   4. Include the Google Cloud SDK? [no]
   5. Include Kubernetes tools — kubectl, helm, k9s? [no]
+     If I say yes here and no to question 4, tell me that authenticating to GKE
+     needs the Google Cloud SDK too.
   6. Only if I said yes to Kubernetes — which Helm major: 3, 4, or both? [3]
+  7. Mount the Docker socket into the sandbox? [on — this is the default]
+     On, the sandbox can run docker commands. It also means the sandbox is NOT a
+     security boundary: access to the docker socket is equivalent to root on my
+     host. Off is safer and breaks anything in the sandbox that needs Docker.
 
 Then write my answers to ~/.tupperclaude.zsh, showing me the file first:
 
@@ -114,25 +150,46 @@ Then write my answers to ~/.tupperclaude.zsh, showing me the file first:
   zstyle ':omz:plugins:tupperclaude' gcloud on
   zstyle ':omz:plugins:tupperclaude' k8s on
   zstyle ':omz:plugins:tupperclaude' helm both
+  zstyle ':omz:plugins:tupperclaude' docker-sock off
 
-Include ONLY the lines matching my answers. Leave out anything I said no to.
+Include ONLY the lines matching my answers. Leave out anything I said no to, and leave
+out docker-sock entirely unless I asked for it off.
 
-Then make sure ~/.zshrc sources it, ABOVE the plugin manager lines:
+Then make sure ~/.zshrc sources it. First check whether it already does:
 
-  [[ -r ~/.tupperclaude.zsh ]] && source ~/.tupperclaude.zsh
+  grep -n 'tupperclaude.zsh' ~/.zshrc
+
+If there is no match, append exactly this line — no guard, no brackets, and it can go
+at the end of the file:
+
+  source ~/.tupperclaude.zsh
+
+Write it exactly that way. `claude-docker-configure` recognises this spelling and will
+leave it alone; a guarded variant like `[[ -r ... ]] && source ...` does not match, so
+the wizard would later append a second copy.
 
 STEP 5 — Check the setup before building
 
   zsh -i -c 'claude-docker-doctor'
 
-Show me the output. It reports what is missing and how to fix it. The image will be
-reported as not built — that is expected at this point.
+Show me the output, then STOP and read it with me before continuing.
 
-Fix anything else it flags before continuing.
+This command EXITS NON-ZERO at this point, and that is expected — it is a checklist,
+not a failure. Expect these:
+
+  - the base image reported FAIL / not built — you have not built it yet (STEP 6)
+  - authkey FAIL, if I chose tailscale and export TS_AUTHKEY in my own shell
+
+Anything else it flags is a real problem. Show it to me and stop — do not try to fix
+it yourself.
 
 STEP 6 — Build the image
 
 ASK ME FIRST. About 15 minutes and 9 GB of disk; roughly 12 GB free is needed to start.
+
+This runs far longer than a default command timeout. Run it in the background, or set
+an explicit timeout of at least 30 minutes, or it will look like a failure when it is
+merely slow.
 
 Use the command for my CPU from STEP 1:
 
@@ -147,11 +204,16 @@ STEP 7 — Test it
 Run all four and show me a pass/fail for each:
 
   1. zsh -i -c 'claude-docker-doctor'
-     Everything should now pass, including the image check.
+     Pass = exits 0 and ends with the line: All required checks passed
+     Rows marked "info" are fine and expected — the Playwright images and the
+     images for the other CPU architecture are reported that way because they are
+     optional, not missing.
 
   2. zsh -i -c 'print -r -- ${_comps[claude-docker-arm]}'
      Must print exactly: _claude-docker
-     That means tab-completion is wired up.
+     That means tab-completion is wired up. If it prints nothing, everything else
+     still works — it means my ~/.zshrc never runs compinit. Tell me, do not try
+     to fix my ~/.zshrc for it.
 
   3. zsh -i -c 'claude-docker-status'
      Lists running sandboxes. An empty list is a pass.
@@ -165,7 +227,9 @@ Run all four and show me a pass/fail for each:
 Finally, tell me these two things:
 
   - The first run in a directory writes a MACHINE.md file there describing the sandbox
-    to Claude. Add it to .gitignore, or delete it — nothing depends on it.
+    to Claude. It is removed again when the sandbox exits, unless it was edited. To
+    stop it being written at all:
+      zstyle ':omz:plugins:tupperclaude' machine-md off
   - Inside the sandbox I have to sign in to Claude Code again. The sandbox keeps its own
     login, separate from my host.
 ````
@@ -177,9 +241,13 @@ Finally, tell me these two things:
 **It asks before:** editing `~/.zshrc`, writing `~/.tupperclaude.zsh`, and starting the
 build.
 
-**It will not:** invent a Tailscale key or a 1Password reference, work around a failure
-without telling you, or run the interactive wizard from a tool call — that needs a real
-terminal and refuses cleanly rather than silently taking every default.
+**It will not:** invent a Tailscale key or a 1Password reference, write a secret into
+any file, work around a failure without telling you, or run the interactive wizard from
+a tool call — that needs a real terminal and refuses cleanly rather than silently taking
+every default.
+
+**It is safe to run twice:** every edit is preceded by a check for what it would add, so
+a second pass changes nothing rather than duplicating lines.
 
 **You still run one thing yourself:** the final `claude-docker-arm`. It takes over the
 terminal with tmux, which an agent cannot usefully drive for you.

@@ -51,10 +51,7 @@ USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # ── Layer 1: Base apt packages + language runtimes ───────────────────────────
-# git-lfs needs `git lfs install` as well as the package: the package only puts
-# the binary on $PATH, and without the filter/smudge config in ~/.gitconfig a
-# clone of an LFS repo silently checks out pointer files instead of content.
-# Run as the agent user further down, since it writes to that user's gitconfig.
+# git-lfs is only half-installed here; see `git lfs install` below USER agent.
 RUN apt-get update && apt-get install -y \
     openssh-client curl gnupg lsb-release ca-certificates \
     tmux ripgrep jq tzdata unzip \
@@ -502,9 +499,10 @@ RUN printf '%s\n' \
 
 USER agent
 
-# git-lfs writes its filter/smudge hooks into the invoking user's ~/.gitconfig,
-# so this belongs here rather than beside the apt install: run as root it would
-# configure root's, and a clone by `agent` would still check out pointer files.
+# The apt package only puts the binary on $PATH. The filter/smudge hooks live in
+# the INVOKING user's ~/.gitconfig, so this has to run after USER agent: as root
+# it would configure root's, and a clone by `agent` would still check out pointer
+# files instead of content — silently, which is the part that costs an afternoon.
 RUN git lfs install --skip-repo
 
 # ── Layer 13: mise (runtime version manager — must not shadow system node) ───
