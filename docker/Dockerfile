@@ -51,10 +51,14 @@ USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # ── Layer 1: Base apt packages + language runtimes ───────────────────────────
+# git-lfs needs `git lfs install` as well as the package: the package only puts
+# the binary on $PATH, and without the filter/smudge config in ~/.gitconfig a
+# clone of an LFS repo silently checks out pointer files instead of content.
+# Run as the agent user further down, since it writes to that user's gitconfig.
 RUN apt-get update && apt-get install -y \
     openssh-client curl gnupg lsb-release ca-certificates \
     tmux ripgrep jq tzdata unzip \
-    zsh \
+    zsh git-lfs \
     postgresql-client default-mysql-client \
     clang clangd cmake build-essential \
     php php-cli php-mbstring php-xml php-curl \
@@ -393,6 +397,7 @@ RUN printf '%s\n' \
   'v "uv"                    uv --version' \
   'v "mise"                  mise --version' \
   'v "git"                   git --version' \
+  'v "git-lfs"               git lfs version' \
   'v "node"                  node --version' \
   'v "npm"                   npm --version' \
   'v "psql"                  psql --version' \
@@ -496,6 +501,11 @@ RUN printf '%s\n' \
   > /usr/local/bin/start.sh && chmod +x /usr/local/bin/start.sh
 
 USER agent
+
+# git-lfs writes its filter/smudge hooks into the invoking user's ~/.gitconfig,
+# so this belongs here rather than beside the apt install: run as root it would
+# configure root's, and a clone by `agent` would still check out pointer files.
+RUN git lfs install --skip-repo
 
 # ── Layer 13: mise (runtime version manager — must not shadow system node) ───
 # Installed from the release binary + published SHASUMS256.txt entry rather than

@@ -28,7 +28,7 @@ ZSH_FILES = \
 	zsh/completions/_claude-docker
 
 .DEFAULT_GOAL := help
-.PHONY: help lint test check test-install test-brew brew-publish test-all hooks unhooks
+.PHONY: help lint test check test-install test-all hooks unhooks
 
 help: ## Show this help
 	@echo "tupperclaude make targets:"
@@ -52,34 +52,13 @@ check: lint test ## Lint + suite. The pre-commit gate.
 test-install: ## Install variations in throwaway Linux containers (needs Docker)
 	@zsh/tests/docker/run-install-matrix.sh
 
-BREW_TAP_REPO ?= git@github.com:abossenbroek/homebrew-tupperclaude.git
-
-test-brew: ## Package the working tree and build the Homebrew formula (needs brew)
-	@zsh/tests/brew/run-formula-test.sh
-
-# The tap's copy is generated, never hand-edited: two writable copies drift, and
-# the one that drifts is always the one no gate tests. Run test-brew first —
-# this pushes whatever is in Formula/, tested or not.
-brew-publish: ## Sync the tested formula into the Homebrew tap and push
-	@tmp=$$(mktemp -d); \
-	git clone -q $(BREW_TAP_REPO) $$tmp || { echo "could not clone $(BREW_TAP_REPO)"; exit 1; }; \
-	cp Formula/tupperclaude.rb $$tmp/Formula/tupperclaude.rb; \
-	cd $$tmp && git add -A && \
-	  if git diff --cached --quiet; then \
-	    echo "tap already matches Formula/tupperclaude.rb — nothing to publish."; \
-	  else \
-	    git commit -q -m "formula: sync from tupperclaude $$(cat $(CURDIR)/.version)" && \
-	    git push -q && echo "published to $(BREW_TAP_REPO)"; \
-	  fi; \
-	rm -rf $$tmp
-
-test-all: check test-install test-brew ## Everything, including the slow tests
+test-all: check test-install ## Everything, including the slow tests
 
 # Releases are cut from main, which only ever holds released code. Work lands on
 # develop; a release PR moves develop to main, and this tags it.
 #
-# The tag is the trigger: CI builds the tarball, creates the GitHub release, and
-# pushes the stable stanza to the Homebrew tap. Nothing here touches the tap.
+# The tag is the trigger: CI builds the tarball and creates the GitHub release.
+# Plugin managers install from the repo, so a release is a marker, not a delivery.
 release: ## Tag a release from main: make release VERSION=0.2.0
 	@test -n "$(VERSION)" || { echo "usage: make release VERSION=0.2.0"; exit 1; }
 	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' \

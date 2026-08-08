@@ -22,7 +22,13 @@ A fish sibling is planned; see [`fish/README.md`](fish/README.md).
 
 ## Install
 
-See [INSTALL.md](INSTALL.md) for oh-my-zsh, zinit, antigen, zplug, and manual setup.
+Paste [SETUP-PROMPT.md](SETUP-PROMPT.md) into Claude Code, Warp, Codex or any coding
+agent with shell access, and it will do the install with you — detecting your plugin
+manager, asking the configuration questions, and testing the result. It checks with you
+before changing anything.
+
+By hand instead: [INSTALL.md](INSTALL.md) covers oh-my-zsh, zinit, antidote, sheldon,
+antigen, zplug and plain zsh.
 
 ## Getting started
 
@@ -202,7 +208,7 @@ much it may talk about tupperclaude. Set [`machine-md`](#machine-md) to `off` to
 writing the file at all.
 
 Run `versions` inside the container for the full toolchain list with version numbers.
-Toolchain: claude, gh, tailscale (CLI only), docker (host socket), git,
+Toolchain: claude, gh, tailscale (CLI only), docker (host socket), git, git-lfs,
 node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo/rustfmt/clippy/rust-analyzer,
 deno, linear-cli, pulumi, mise, psql, mysql, tmux, ripgrep, jq, yq, clang/clangd/cmake,
 pyright, typescript-language-server, svelte-language-server/svelte-check, and optionally

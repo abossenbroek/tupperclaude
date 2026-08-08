@@ -44,9 +44,10 @@ body:
       label: How is tupperclaude installed?
       options:
         - oh-my-zsh plugin
-        - Homebrew
+        - zinit
+        - antidote / sheldon
+        - antigen / zplug
         - manual source line in .zshrc
-        - zinit / antigen / zplug
         - other
     validations:
       required: true

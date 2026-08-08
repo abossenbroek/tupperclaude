@@ -79,12 +79,12 @@ first move.
 ## Branches
 
 - **`develop`** is the integration branch. Open your PR against it.
-- **`main`** only ever holds released code, and is what the Homebrew tap's `--HEAD`
-  serves. It moves by a release PR from `develop`, then a tag.
+- **`main`** only ever holds released code. It moves by a release PR from `develop`,
+  then a tag. Plugin managers that track a branch install from here.
 
 Releases are SemVer and cut from `main` with `make release VERSION=x.y.z`, which runs
 `make check`, bumps `.version`, commits and tags. Pushing the tag is what triggers CI to
-build the tarball, create the GitHub release and push the stable stanza to the tap.
+build the tarball and create the signed, attested GitHub release.
 
 ## Before you open a pull request
 
@@ -98,11 +98,9 @@ Run the slower tiers when you touch what they cover:
 | you changed | also run |
 |---|---|
 | the plugin shim, `$fpath`, completions, anything load-time | `make test-install` |
-| `Formula/tupperclaude.rb` or the installed file layout | `make test-brew` |
 | `docker/Dockerfile*` | a real build: `claude-docker-build-arm` |
 
-`make test-install` and `make test-brew` need Docker and Homebrew respectively, and take
-minutes. CI runs the first; the second is macOS-only and manual.
+`make test-install` needs Docker and takes minutes; CI runs it too.
 
 ## House style
 

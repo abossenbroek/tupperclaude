@@ -364,7 +364,7 @@ fi
 # sat in ~/.config. Only the kubeconfig is genuinely conditional, because only
 # its mount is.
 local md_creds='SSH, GitHub CLI (`gh`), Linear, Pulumi, AWS, Google Cloud'
-local md_tools='claude, gh, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear'
+local md_tools='claude, gh, tailscale (CLI only — the daemon runs in the sidecar), docker, git, git-lfs, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear'
 _claude_docker_tool enabled aws    && md_tools+=', aws'
 _claude_docker_tool enabled gcloud && md_tools+=', gcloud'
 if _claude_docker_tool enabled k8s; then
