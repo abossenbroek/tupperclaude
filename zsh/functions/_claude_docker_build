@@ -113,29 +113,36 @@ if [[ "$_tc_variant" == playwright ]]; then
     }
 fi
 
-# The `aws` option changes what is IN the image but not its tag, so
-# claude-code-full-<arch> means two materially different things depending on how
-# it was built and `_claude_docker_check image` cannot tell them apart: flip the
-# option, then *run* rather than rebuild, and you silently get an image with no
-# AWS CLI. Stamp the answer into a label so the mismatch is at least detectable.
-local aws_included=''
-if [[ "$_tc_variant" == playwright ]]; then
-    # The AWS CLI is installed by the base image's Dockerfile alone; this variant
-    # is FROM'd on top and carries whatever the base carries, regardless of what
-    # the option says today. Take the base image's answer, or the label would
-    # contradict its own layers.
-    aws_included="$(command docker image inspect \
-        -f '{{index .Config.Labels "tupperclaude.aws"}}' "$base_image" 2>/dev/null)"
-fi
-# Anything else — the base variant, or a base image built before this label
-# existed — falls back to the option, which is then the best answer available.
-if [[ $aws_included != (true|false) ]]; then
-    if _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
-        aws_included=true
-    else
-        aws_included=false
+# The optional-tool options change what is IN the image but not its tag, so
+# claude-code-full-<arch> means several materially different things depending on
+# how it was built and `_claude_docker_check image` cannot tell them apart: flip
+# an option, then *run* rather than rebuild, and you silently get an image
+# without the tool. Stamp each answer into a label so the mismatch is at least
+# detectable.
+local -A tool_included
+local _tc_tool answer
+for _tc_tool in $_tupperclaude_tools; do
+    answer=''
+    if [[ "$_tc_variant" == playwright ]]; then
+        # These tools are installed by the base image's Dockerfile alone; this
+        # variant is FROM'd on top and carries whatever the base carries,
+        # regardless of what the option says today. Take the base image's
+        # answer, or the label would contradict its own layers.
+        answer="$(command docker image inspect \
+            -f "{{index .Config.Labels \"$(_claude_docker_tool label $_tc_tool)\"}}" \
+            "$base_image" 2>/dev/null)"
     fi
-fi
+    # Anything else — the base variant, or a base image built before this label
+    # existed — falls back to the option, the best answer available.
+    if [[ $answer != (true|false) ]]; then
+        if _claude_docker_tool enabled $_tc_tool; then
+            answer=true
+        else
+            answer=false
+        fi
+    fi
+    tool_included[$_tc_tool]=$answer
+done
 
 local dockerfile
 dockerfile="$(_claude_docker_opt dockerfile CLAUDE_DOCKER_DOCKERFILE "$_tc_dockerfile")"
@@ -253,18 +260,21 @@ local build_status
     fi
 
     local build_date="$(command date +%Y-%m-%dT%H:%M:%S)"
-    local -a build_args=(
-        --build-arg "BUILD_DATE=$build_date"
-        --label     "tupperclaude.aws=$aws_included"
-    )
-    # Only the base variant's Dockerfile declares ARG INCLUDE_AWS; playwright is
-    # FROM'd on top and inherits whatever the base carries regardless of this
-    # option (see aws_included above), so passing the build-arg here would just
-    # earn a "one or more build-args were not consumed" warning at the very end
-    # of a 15-minute playwright build.
-    if [[ "$_tc_variant" == base ]] && _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
-        build_args+=(--build-arg INCLUDE_AWS=1)
-        _claude_docker_info "including AWS CLI v2 in the image (aws option is set)."
+    local -a build_args=(--build-arg "BUILD_DATE=$build_date")
+    for _tc_tool in $_tupperclaude_tools; do
+        build_args+=(--label "$(_claude_docker_tool label $_tc_tool)=$tool_included[$_tc_tool]")
+    done
+    # Only the base variant's Dockerfile declares these ARGs; playwright is
+    # FROM'd on top and inherits whatever the base carries regardless of the
+    # options (see tool_included above), so passing the build-args here would
+    # just earn a "one or more build-args were not consumed" warning at the very
+    # end of a 15-minute playwright build.
+    if [[ "$_tc_variant" == base ]]; then
+        for _tc_tool in $_tupperclaude_tools; do
+            _claude_docker_tool enabled $_tc_tool || continue
+            build_args+=(--build-arg "$(_claude_docker_tool arg $_tc_tool)=1")
+            _claude_docker_info "including $(_claude_docker_tool desc $_tc_tool) in the image ($_tc_tool option is set)."
+        done
     fi
     if [[ "$_tc_variant" == playwright ]]; then
         build_args+=(--build-arg "BASE_IMAGE=$base_image")
@@ -289,15 +299,17 @@ fi
 #     claude-docker-clean --prune
 
 local -a tools=(
-    "claude --version" "gh --version" "gcloud --version" "rg --version"
+    "claude --version" "gh --version" "rg --version"
     "yq --version" "tmux -V" "uv --version" "psql --version" "mysql --version"
     "deno --version" "linear --version" "rustc --version" "cargo --version"
     "rust-analyzer --version" "pulumi version" "tailscale version"
 )
-# Keyed off the label just stamped, not off the option: for the playwright
+# Keyed off the labels just stamped, not off the options: for the playwright
 # variant they can disagree, and probing for a tool the image does not have would
 # report `aws: not found` on a perfectly correct image.
-[[ $aws_included == true ]] && tools+=("aws --version")
+[[ $tool_included[aws]    == true ]] && tools+=("aws --version")
+[[ $tool_included[gcloud] == true ]] && tools+=("gcloud --version")
+[[ $tool_included[k8s]    == true ]] && tools+=("kubectl version --client" "helm version" "k9s version")
 [[ "$_tc_variant" == playwright ]] && tools+=("playwright --version")
 
 # One throwaway container per tool. Unannounced this reads as a hang for a

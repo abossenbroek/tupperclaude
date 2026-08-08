@@ -31,38 +31,40 @@ _claude_docker_check image "$_tc_image" "$_tc_build_cmd" || {
     return 1
 }
 
-# The `aws` option changes what is IN the image, not its tag, so an image built
-# before the option was flipped keeps serving every run silently. The build
-# stamps the answer it used as a label; comparing it here is what makes that
-# label more than write-only bookkeeping — without this you flip aws on, RUN
-# (rather than rebuild), and get no AWS CLI with nothing said.
+# The optional-tool options change what is IN the image, not its tag, so an
+# image built before an option was flipped keeps serving every run silently. The
+# build stamps the answer it used as a label; comparing it here is what makes
+# that label more than write-only bookkeeping — without this you flip aws on,
+# RUN (rather than rebuild), and get no AWS CLI with nothing said.
 #
 # A warning, not a failure: the image works, it just isn't what the option now
 # says. And only when the label is actually present — images built before it
 # existed report nothing, and blaming them for an invisible mismatch would make
 # this noise on every launch.
-local built_aws
-built_aws="$(command docker image inspect \
-    -f '{{index .Config.Labels "tupperclaude.aws"}}' "$_tc_image" 2>/dev/null)"
-if [[ $built_aws == (true|false) ]]; then
-    integer want_aws=0
-    _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS && want_aws=1
-    integer has_aws=0
-    [[ $built_aws == true ]] && has_aws=1
-    if (( want_aws != has_aws )); then
-        # WHICH command actually fixes this differs by variant, and naming the
-        # wrong one makes the warning unactionable: the AWS CLI is installed by
-        # the base Dockerfile alone, so the playwright image inherits the base's
-        # answer (_claude_docker_build stamps its label from the base image's).
-        # Rebuilding playwright therefore re-stamps the same value and the
-        # warning returns forever. Point at the base builder instead.
-        local aws_fix="$_tc_build_cmd"
-        [[ $_tc_variant == playwright ]] \
-            && aws_fix="${_tc_build_cmd%-playwright}    # the base image decides this; playwright inherits it"
-        _claude_docker_warn "the aws option is $( (( want_aws )) && print on || print off ) but ${_tc_image} was built with aws=$built_aws — the option takes effect on the next build, not on this run" \
-            "$aws_fix"
-    fi
-fi
+local _tc_tool built want_label
+for _tc_tool in $_tupperclaude_tools; do
+    built="$(command docker image inspect \
+        -f "{{index .Config.Labels \"$(_claude_docker_tool label $_tc_tool)\"}}" \
+        "$_tc_image" 2>/dev/null)"
+    [[ $built == (true|false) ]] || continue
+
+    want_label=off
+    _claude_docker_tool enabled $_tc_tool && want_label=on
+    [[ $want_label == on && $built == true ]] && continue
+    [[ $want_label == off && $built == false ]] && continue
+
+    # WHICH command actually fixes this differs by variant, and naming the wrong
+    # one makes the warning unactionable: these tools are installed by the base
+    # Dockerfile alone, so the playwright image inherits the base's answer
+    # (_claude_docker_build stamps its label from the base image's). Rebuilding
+    # playwright therefore re-stamps the same value and the warning returns
+    # forever. Point at the base builder instead.
+    local tool_fix="$_tc_build_cmd"
+    [[ $_tc_variant == playwright ]] \
+        && tool_fix="${_tc_build_cmd%-playwright}    # the base image decides this; playwright inherits it"
+    _claude_docker_warn "the $_tc_tool option is $want_label but ${_tc_image} was built with $_tc_tool=$built — the option takes effect on the next build, not on this run" \
+        "$tool_fix"
+done
 
 # One container name per directory and variant, so a second run in the same
 # directory collides on --name. Checked HERE, before the sidecar work and

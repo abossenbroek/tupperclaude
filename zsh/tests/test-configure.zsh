@@ -441,4 +441,38 @@ check "wizard: an unknown argument returns non-zero" $? "rc=$rc"
 [[ $out == *'tupperclaude: error:'* ]]
 check "wizard: an unknown argument uses the house error style" $? "got: $out"
 
+# ============================================================================
+# every optional tool is asked about, and every answer lands in the config
+# ============================================================================
+#
+# The tool questions are generated from $_tupperclaude_tools. Adding a tool to
+# that array without a matching stanza in the template would ask the question
+# and then drop the answer on the floor — the config is written by uncommenting
+# a template line that has to exist. This asserts the whole array round-trips.
+#
+# Last in the file on purpose: every run_wizard above leaves $cfg behind for the
+# assertions that follow it, so a run inserted mid-file answers a later test's
+# question with the wrong config.
+#
+# ${(pl:...::y\n:)} repeats the answer once per tool without a command
+# substitution — $(...) strips the trailing newline, which leaves the final
+# answer unterminated and unread.
+local answers
+answers="${(pl:$(( $#_tupperclaude_tools * 2 ))::y\n:)}"
+run_wizard "2"$'\n'"$answers"
+local tool
+for tool in $_tupperclaude_tools; do
+    [[ $cfg == *"zstyle ':omz:plugins:tupperclaude' $tool 'on'"* ]]
+    check "wizard: answering yes to $tool writes its zstyle line" $? "config: $cfg"
+done
+
+# And answering no to all of them leaves every one out, so a template stanza
+# uncommented unconditionally cannot pass the check above.
+answers="${(pl:$(( $#_tupperclaude_tools * 2 ))::n\n:)}"
+run_wizard "2"$'\n'"$answers"
+for tool in $_tupperclaude_tools; do
+    [[ $cfg != *"' $tool 'on'"* ]]
+    check "wizard: answering no to $tool leaves it out of the config" $? "config: $cfg"
+done
+
 test_summary
