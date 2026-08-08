@@ -8,7 +8,9 @@ result at the end.
 You stay in control the whole way: the agent proposes, you approve.
 
 **Prefer to do it yourself?** [INSTALL.md](INSTALL.md) has the same steps by hand, and
-`claude-docker-configure` is an interactive wizard that asks the same questions.
+`claude-docker-configure` is an interactive wizard that asks most of the same questions
+— it covers networking, the auth key, the optional toolchains and Helm, but not
+`docker-sock`, which the prompt below asks about because it defaults to on.
 
 ---
 
@@ -26,8 +28,10 @@ RULES
 - Show me each command before you run it.
 - Ask me before you change any file of mine.
 - Before your first edit to ~/.zshrc, back it up with exactly:
-    cp ~/.zshrc ~/.zshrc.tupperclaude-bak-$(date +%Y%m%d%H%M%S)
-  Show me the backup path afterwards.
+    test -f ~/.zshrc && cp ~/.zshrc ~/.zshrc.tupperclaude-bak-$(date +%Y%m%d%H%M%S)
+  Show me the backup path afterwards. If I have no ~/.zshrc yet, say so and create it.
+  If ~/.zshrc is a symlink into a dotfiles repo, tell me before you append: the edit
+  lands in that repo, not just on this machine.
 - Before adding any line to a file, grep for it first. If it is already there, change
   nothing. Every step here is safe to run twice; keep it that way.
 - Ask me before starting the image build. It takes about 15 minutes and 9 GB of disk.
@@ -60,7 +64,8 @@ Then tell me whether my CPU is arm64 (Apple Silicon) or amd64 (Intel). I need th
 Stop and tell me how to fix it if any of these is true:
 
   - `uname -s` is not Darwin. tupperclaude is macOS-only today.
-  - Docker or jq is missing.
+  - Docker, jq or git is missing. For git the fix is `xcode-select --install`;
+    without it every clone below pops a GUI installer instead.
   - The Docker daemon is not running — I need to start Docker Desktop.
   - `~/.claude.json` is missing. Fix: I run Claude Code once on the host, so it
     creates that file. The setup check below requires it.
@@ -84,25 +89,45 @@ Look at ~/.zshrc and my home directory and tell me which of these I use:
 
 If you find more than one, ask me which to use. Do not guess.
 
+If it is antidote, also tell me which file holds my plugin list, and whether my
+~/.zshrc calls `antidote load` or sources a generated ~/.zsh_plugins.zsh. STEP 3
+needs to know which.
+
 STEP 3 — Install the plugin
 
 Use the option matching my manager. Show me the exact edit and wait for my approval.
 
+A clone into a directory that already exists is an ERROR, not a failure: it means a
+previous run got this far. Do not delete it and do not stop — leave it alone, or run
+`git -C <that directory> pull --ff-only`, and tell me which you did.
+
   oh-my-zsh:
     first resolve the custom directory in zsh, where ZSH_CUSTOM is actually set:
       zsh -i -c 'print -r -- ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}'
-    then:
+    then, unless <that>/plugins/tupperclaude already exists:
       git clone https://github.com/abossenbroek/tupperclaude <that>/plugins/tupperclaude
     then add tupperclaude to the existing plugins=(...) line in ~/.zshrc.
     Edit that line in place — do not add a second plugins=() line, and do not
     reformat the array. A malformed plugins=() breaks my login shell.
 
   zinit:      add to ~/.zshrc:  zinit light abossenbroek/tupperclaude
-  antidote:   add to my plugins file:  abossenbroek/tupperclaude
-  sheldon:    run: sheldon add tupperclaude --github abossenbroek/tupperclaude
+  antidote:   add to my antidote plugins file:  abossenbroek/tupperclaude
+              Find that file first — it is usually ~/.zsh_plugins.txt, but check what
+              my ~/.zshrc actually references. If my setup is the static kind, where
+              ~/.zshrc sources a generated ~/.zsh_plugins.zsh, adding to the .txt
+              alone loads nothing; regenerate it too:
+                antidote bundle < ~/.zsh_plugins.txt > ~/.zsh_plugins.zsh
+              If my ~/.zshrc uses `antidote load`, the .txt alone is enough.
+  sheldon:    check ~/.config/sheldon/plugins.toml for tupperclaude first; if it is
+              not there, run:
+                sheldon add tupperclaude --github abossenbroek/tupperclaude
   zplug:      add to ~/.zshrc:  zplug "abossenbroek/tupperclaude", use:"tupperclaude.plugin.zsh"
+              then run:  zsh -i -c 'zplug install'
+              zplug does not clone on its own; without this the next shell says
+              "not installed" and the check below fails.
   antigen:    add to ~/.zshrc:  antigen bundle abossenbroek/tupperclaude
-  none:       git clone https://github.com/abossenbroek/tupperclaude ~/.tupperclaude
+  none:       unless ~/.tupperclaude already exists:
+                git clone https://github.com/abossenbroek/tupperclaude ~/.tupperclaude
               then add to ~/.zshrc:  source ~/.tupperclaude/tupperclaude.plugin.zsh
 
 Then check it loaded:
@@ -142,6 +167,14 @@ brackets if I am unsure.
      security boundary: access to the docker socket is equivalent to root on my
      host. Off is safer and breaks anything in the sandbox that needs Docker.
 
+If ~/.tupperclaude.zsh already exists, show me what is in it, back it up with
+
+  cp ~/.tupperclaude.zsh ~/.tupperclaude.zsh.bak-$(date +%Y%m%d%H%M%S)
+
+and ask me before replacing it. Keep any zstyle line I already set that is not one of
+the ones below — `home`, `dockerfile` and `machine-md` are real options this prompt
+never asks about, and losing them silently would be worse than asking.
+
 Then write my answers to ~/.tupperclaude.zsh, showing me the file first:
 
   zstyle ':omz:plugins:tupperclaude' network tailscale
@@ -175,13 +208,22 @@ STEP 5 — Check the setup before building
 Show me the output, then STOP and read it with me before continuing.
 
 This command EXITS NON-ZERO at this point, and that is expected — it is a checklist,
-not a failure. Expect these:
+not a failure. All of these are expected now:
 
-  - the base image reported FAIL / not built — you have not built it yet (STEP 6)
+  - the base image for my CPU reported FAIL — you have not built it yet (STEP 6)
+  - any image row marked "info": the images for the other CPU architecture and the
+    two Playwright images. Optional, not missing.
   - authkey FAIL, if I chose tailscale and export TS_AUTHKEY in my own shell
+  - ssh-agent FAIL, if you warned me in STEP 1 that my Docker engine is not Docker
+    Desktop
+  - op-signin FAIL, if I chose 1Password and it is currently locked — I can run
+    `op signin` and you can re-run this
 
-Anything else it flags is a real problem. Show it to me and stop — do not try to fix
-it yourself.
+Anything OTHER than those is a real problem. Show it to me and stop — do not try to
+fix it yourself.
+
+If I chose 1Password, this step may pop a biometric prompt and hang until I approve
+it. Tell me when you are about to run it so I am watching.
 
 STEP 6 — Build the image
 
@@ -204,21 +246,28 @@ STEP 7 — Test it
 Run all four and show me a pass/fail for each:
 
   1. zsh -i -c 'claude-docker-doctor'
-     Pass = exits 0 and ends with the line: All required checks passed
+     Pass = exits 0 and ends with the line: All required checks passed.
      Rows marked "info" are fine and expected — the Playwright images and the
      images for the other CPU architecture are reported that way because they are
      optional, not missing.
 
-  2. zsh -i -c 'print -r -- ${_comps[claude-docker-arm]}'
-     Must print exactly: _claude-docker
-     That means tab-completion is wired up. If it prints nothing, everything else
-     still works — it means my ~/.zshrc never runs compinit. Tell me, do not try
-     to fix my ~/.zshrc for it.
+  2. zsh -i -c '[[ ${_comps[claude-docker-arm]} == _claude-docker ]] && echo COMPLETION-OK'
+     Pass = the output contains COMPLETION-OK. Match on that word rather than on
+     the whole line: themes like powerlevel10k print their own chatter into a
+     non-interactive `zsh -i -c`, which would swamp an exact-match test.
+     If it is absent, everything else still works — it means my ~/.zshrc never runs
+     compinit. Tell me, do not try to fix my ~/.zshrc for it.
 
   3. zsh -i -c 'claude-docker-status'
      Lists running sandboxes. An empty list is a pass.
 
-  4. Ask me to run this one myself, in my own terminal — it takes over the window:
+  4. Ask me to run this one myself, in my own terminal — it takes over the window.
+     Tell me to run `exec zsh` first, or open a new terminal: the shell I am sitting
+     in was started before you edited ~/.zshrc, so it does not have these commands
+     yet. (Your own checks above are unaffected — `zsh -i -c` starts a fresh shell
+     every time, which is why they worked.)
+
+       exec zsh
        cd <some project directory> && claude-docker-arm
      I should land in tmux with Claude Code running. Tell me to check that the window
      list at the bottom matches the tools I enabled, and that pressing Ctrl-b then d

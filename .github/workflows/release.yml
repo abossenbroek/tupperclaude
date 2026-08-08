@@ -60,7 +60,6 @@ jobs:
           # rather than the thing anyone installs from.
           git archive --format=tar.gz --prefix="tupperclaude-${version}/" \
             -o "tupperclaude-${version}.tar.gz" "$GITHUB_REF_NAME"
-          echo "sha256=$(sha256sum "tupperclaude-${version}.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
       # Binds the tarball's digest to this repository, workflow and commit, in a
       # public transparency log. `gh attestation verify` is the whole client
