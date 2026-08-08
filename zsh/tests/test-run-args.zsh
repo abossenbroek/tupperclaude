@@ -172,6 +172,58 @@ fi
 
 zstyle -d ':omz:plugins:tupperclaude' network
 
+# --- the full tmux window set, in order --------------------------------------
+#
+# The documented layout is [claude] [aws] [gcloud] [k9s] [tailscale] [zsh], and
+# each auth window carries its login command PRE-TYPED but not executed — one
+# Enter when a lease expires, and recallable from shell history afterwards. That
+# distinction is the whole feature: a `send-keys` that ended in Enter would run
+# the login on every launch, and nothing else here would notice.
+
+zstyle ':omz:plugins:tupperclaude' aws on
+zstyle ':omz:plugins:tupperclaude' gcloud on
+zstyle ':omz:plugins:tupperclaude' k8s on
+zstyle ':omz:plugins:tupperclaude' network tailscale
+_claude_docker_ctx arm64 base || exit 1
+_claude_docker_run arm64 base >/dev/null 2>&1
+
+launcher="$_tc_state/tmux-launch.sh"
+if [[ -r $launcher ]]; then
+    # The window NAMES in order, taken from -n flags: this asserts the sequence,
+    # not merely that six windows exist.
+    local names
+    names="$(command grep -oE '(new-session|new-window)[^|]*-n [a-z0-9]+' $launcher \
+        | command sed 's/.*-n //' | command tr '\n' ' ')"
+    [[ $names == 'claude aws gcloud k9s tailscale zsh ' ]]
+    check "tmux: the window set is claude aws gcloud k9s tailscale zsh, in that order" $? \
+        "got: $names"
+
+    # send-keys WITHOUT a trailing Enter/C-m is what leaves the command typed
+    # and waiting. A send-keys line ending in Enter would execute it.
+    command grep -q "send-keys -t main:aws 'aws sso login" $launcher \
+        && ! command grep -E "send-keys -t main:aws .*(Enter|C-m)" $launcher >/dev/null
+    check "tmux: the aws login is pre-typed, not executed" $?
+
+    command grep -q "send-keys -t main:gcloud 'gcloud auth" $launcher \
+        && ! command grep -E "send-keys -t main:gcloud .*(Enter|C-m)" $launcher >/dev/null
+    check "tmux: the gcloud ADC login is pre-typed, not executed" $?
+
+    # k9s and the tailnet monitor are RUN, not typed — a TUI and a watcher have
+    # nothing to confirm.
+    ! command grep -q "send-keys -t main:k9s" $launcher
+    check "tmux: k9s is run, not pre-typed" $?
+
+    command grep -q 'select-window -t main:claude' $launcher
+    check "tmux: claude is the selected window" $?
+else
+    not_ok "tmux: launcher missing, cannot assert the window set"
+fi
+
+zstyle -d ':omz:plugins:tupperclaude' aws
+zstyle -d ':omz:plugins:tupperclaude' gcloud
+zstyle -d ':omz:plugins:tupperclaude' k8s
+zstyle -d ':omz:plugins:tupperclaude' network
+
 # --- the aws option vs. the image that is actually there ----------------------
 #
 # `aws` changes what is IN the image, not its tag, so only a REBUILD acts on it.
