@@ -33,7 +33,7 @@ RULES
   If ~/.zshrc is a symlink into a dotfiles repo, tell me before you append: the edit
   lands in that repo, not just on this machine.
 - Before adding any line to a file, grep for it first. If it is already there, change
-  nothing. Every step here is safe to run twice; keep it that way.
+  nothing. Running this whole prompt twice must never duplicate a line.
 - Ask me before starting the image build. It takes about 15 minutes and 9 GB of disk.
 - Never invent a secret. If a step needs an auth key or a password-manager reference,
   stop and ask me for it.
@@ -56,8 +56,9 @@ Run these and show me the results as a short table:
   zsh --version
   jq --version
   git --version
+  command -v claude || echo "claude: MISSING"
   test -f ~/.claude.json && echo "claude.json: present" || echo "claude.json: MISSING"
-  df -g / | tail -1
+  df -g "$HOME" | tail -1
 
 Then tell me whether my CPU is arm64 (Apple Silicon) or amd64 (Intel). I need that later.
 
@@ -67,9 +68,10 @@ Stop and tell me how to fix it if any of these is true:
   - Docker, jq or git is missing. For git the fix is `xcode-select --install`;
     without it every clone below pops a GUI installer instead.
   - The Docker daemon is not running — I need to start Docker Desktop.
+  - Claude Code itself is missing. Install it first — the file below comes from it.
   - `~/.claude.json` is missing. Fix: I run Claude Code once on the host, so it
     creates that file. The setup check below requires it.
-  - Less than about 12 GB free on /.
+  - Less than about 12 GB free in my home directory.
 
 Warn me, but continue, if the Docker OperatingSystem is not "Docker Desktop"
 (OrbStack and Colima report something else). tupperclaude mounts Docker Desktop's
@@ -77,7 +79,14 @@ ssh-agent socket at a fixed path, and that check will FAIL on other engines.
 
 STEP 2 — Find my zsh plugin manager
 
-Look at ~/.zshrc and my home directory and tell me which of these I use:
+First find where my zshrc actually lives — it is not always ~/.zshrc:
+
+  zsh -i -c 'print -r -- "ZDOTDIR=${ZDOTDIR:-$HOME}"'
+
+Use <that>/.zshrc everywhere below and everywhere later in this prompt. Tell me the
+path you settled on.
+
+Then look at that file and my home directory and tell me which of these I use:
 
   oh-my-zsh   the directory ~/.oh-my-zsh exists
   zinit       "zinit" appears in ~/.zshrc
@@ -103,10 +112,15 @@ previous run got this far. Do not delete it and do not stop — leave it alone, 
 
   oh-my-zsh:
     first resolve the custom directory in zsh, where ZSH_CUSTOM is actually set:
-      zsh -i -c 'print -r -- ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}'
+      zsh -i -c 'print -r -- "ZSH_CUSTOM=${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"'
+    Take the text after ZSH_CUSTOM= on the one line that starts with it, and stop
+    if there is not exactly one such line. Themes like powerlevel10k print their
+    own output here, and this answer becomes a path you clone into — do not just
+    take the whole output.
     then, unless <that>/plugins/tupperclaude already exists:
       git clone https://github.com/abossenbroek/tupperclaude <that>/plugins/tupperclaude
-    then add tupperclaude to the existing plugins=(...) line in ~/.zshrc.
+    then add tupperclaude to the existing plugins=(...) line in ~/.zshrc — unless
+    it is already in that array, in which case change nothing.
     Edit that line in place — do not add a second plugins=() line, and do not
     reformat the array. A malformed plugins=() breaks my login shell.
 
@@ -122,10 +136,14 @@ previous run got this far. Do not delete it and do not stop — leave it alone, 
               not there, run:
                 sheldon add tupperclaude --github abossenbroek/tupperclaude
   zplug:      add to ~/.zshrc:  zplug "abossenbroek/tupperclaude", use:"tupperclaude.plugin.zsh"
+              This line must go ABOVE the existing `zplug load` line, not at the
+              end of the file — a declaration after it is ignored.
               then run:  zsh -i -c 'zplug install'
               zplug does not clone on its own; without this the next shell says
               "not installed" and the check below fails.
   antigen:    add to ~/.zshrc:  antigen bundle abossenbroek/tupperclaude
+              This line must go ABOVE the existing `antigen apply` line, not at
+              the end of the file — a bundle after it is ignored.
   none:       unless ~/.tupperclaude already exists:
                 git clone https://github.com/abossenbroek/tupperclaude ~/.tupperclaude
               then add to ~/.zshrc:  source ~/.tupperclaude/tupperclaude.plugin.zsh
@@ -146,7 +164,13 @@ brackets if I am unsure.
        your private network.
      - default: plain Docker networking. Simpler, no Tailscale account needed.
 
-  2. Only if I chose tailscale — how should the auth key be supplied?
+  2. Only if I chose tailscale — the auth key.
+     Tell me first that the key must be REUSABLE, TAGGED, and ephemeral OFF, and
+     that I can mint one at https://login.tailscale.com/admin/settings/keys.
+     tupperclaude creates one Tailscale node per project directory, so a
+     single-use key works for the first project and then quietly stops working —
+     long after this setup has finished and told me it succeeded.
+     Then ask how it should be supplied:
      - a 1Password reference such as op://Private/Tailscale/authkey, or
      - I export TS_AUTHKEY myself, in my own shell.
      Do NOT make up a key, and do NOT write one into a file. If I pick the second
@@ -185,8 +209,13 @@ Then write my answers to ~/.tupperclaude.zsh, showing me the file first:
   zstyle ':omz:plugins:tupperclaude' helm both
   zstyle ':omz:plugins:tupperclaude' docker-sock off
 
-Include ONLY the lines matching my answers. Leave out anything I said no to, and leave
-out docker-sock entirely unless I asked for it off.
+ALWAYS write the network line, with whichever value I chose — `tailscale` or
+`default`. Leaving it out does not mean "no networking": the built-in default is
+`tailscale`, so omitting it gives me the sidecar I just declined, plus an authkey
+failure nobody expected.
+
+The leave-it-out rule applies only to the yes/no options — aws, gcloud, k8s — and to
+docker-sock, which belongs in the file only if I asked for it off.
 
 Then make sure ~/.zshrc sources it. First check whether it already does:
 
@@ -216,8 +245,9 @@ not a failure. All of these are expected now:
   - authkey FAIL, if I chose tailscale and export TS_AUTHKEY in my own shell
   - ssh-agent FAIL, if you warned me in STEP 1 that my Docker engine is not Docker
     Desktop
-  - op-signin FAIL, if I chose 1Password and it is currently locked — I can run
-    `op signin` and you can re-run this
+  - op-signin FAIL, if I chose 1Password and it is currently locked — and the
+    authkey FAIL that comes with it, because the reference cannot resolve while
+    it is locked. I can run `op signin` and you can re-run this.
 
 Anything OTHER than those is a real problem. Show it to me and stop — do not try to
 fix it yourself.
@@ -246,10 +276,14 @@ STEP 7 — Test it
 Run all four and show me a pass/fail for each:
 
   1. zsh -i -c 'claude-docker-doctor'
-     Pass = exits 0 and ends with the line: All required checks passed.
-     Rows marked "info" are fine and expected — the Playwright images and the
-     images for the other CPU architecture are reported that way because they are
-     optional, not missing.
+     Pass = the image row for my CPU is now ok, and the only FAIL rows left are
+     the ones we agreed in STEP 5 were expected. Those three do not go away after
+     a build: authkey if I export TS_AUTHKEY in my own shell, ssh-agent if my
+     engine is not Docker Desktop, op-signin while 1Password is locked.
+     If none of those apply to me, then this must exit 0 and end with the line:
+       All required checks passed.
+     Rows marked "info" are fine either way — the Playwright images and the images
+     for the other CPU architecture are optional, not missing.
 
   2. zsh -i -c '[[ ${_comps[claude-docker-arm]} == _claude-docker ]] && echo COMPLETION-OK'
      Pass = the output contains COMPLETION-OK. Match on that word rather than on
@@ -267,8 +301,12 @@ Run all four and show me a pass/fail for each:
      yet. (Your own checks above are unaffected — `zsh -i -c` starts a fresh shell
      every time, which is why they worked.)
 
+     Use the command for my CPU, the same way STEP 6 did:
+
        exec zsh
-       cd <some project directory> && claude-docker-arm
+       cd <some project directory>
+       arm64 (Apple Silicon):  claude-docker-arm
+       amd64 (Intel):          claude-docker-amd64
      I should land in tmux with Claude Code running. Tell me to check that the window
      list at the bottom matches the tools I enabled, and that pressing Ctrl-b then d
      detaches.
@@ -296,9 +334,11 @@ a tool call — that needs a real terminal and refuses cleanly rather than silen
 every default.
 
 **It is safe to run twice:** every edit is preceded by a check for what it would add, so
-a second pass changes nothing rather than duplicating lines.
+a second pass never duplicates a line. It will offer to rewrite `~/.tupperclaude.zsh`,
+taking a fresh timestamped backup first.
 
-**You still run one thing yourself:** the final `claude-docker-arm`. It takes over the
+**You still run one thing yourself:** the final `claude-docker-arm` (or
+`claude-docker-amd64` on Intel). It takes over the
 terminal with tmux, which an agent cannot usefully drive for you.
 
 ## If it goes wrong

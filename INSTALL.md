@@ -40,7 +40,7 @@ plugin; it's why the ordinary clone-into-plugins-dir workflow below just works.
 [SETUP-PROMPT.md](SETUP-PROMPT.md) is a prompt you can paste into Claude Code, Warp,
 Codex, Cursor or any coding agent with shell access. It detects your plugin manager,
 asks you the configuration questions, and tests the result — checking with you before it
-changes anything. The rest of this file is the same thing by hand.
+changes anything. The sections below are that same install by hand.
 
 ## oh-my-zsh
 
@@ -97,11 +97,19 @@ eval "$(sheldon source)"
 antigen bundle abossenbroek/tupperclaude
 ```
 
+The bundle line has to come **above** your `antigen apply`; a bundle declared after
+it is ignored.
+
 ## zplug
 
 ```zsh
 zplug "abossenbroek/tupperclaude", use:"tupperclaude.plugin.zsh"
+zplug install
 ```
+
+Same ordering rule: the line goes **above** `zplug load`. `zplug install` is what
+actually clones it — without that, the next shell reports the plugin as not
+installed.
 
 ## Manual (no plugin manager)
 
