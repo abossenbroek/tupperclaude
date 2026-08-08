@@ -84,6 +84,13 @@ abossenbroek/tupperclaude
 sheldon add tupperclaude --github abossenbroek/tupperclaude
 ```
 
+A fresh sheldon install also needs this line in `~/.zshrc`, or nothing it manages
+loads at all:
+
+```zsh
+eval "$(sheldon source)"
+```
+
 ## antigen
 
 ```zsh
