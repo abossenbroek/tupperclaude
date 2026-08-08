@@ -394,7 +394,9 @@ RUN printf '%s\n' \
   'v "uv"                    uv --version' \
   'v "mise"                  mise --version' \
   'v "git"                   git --version' \
-  'v "git-lfs"               git lfs version' \
+  '# `git lfs version` prints happily when the filter config is absent, which is' \
+  '# the state that actually breaks a clone. Probe the config instead.' \
+  'v "git-lfs"               git config --global --get filter.lfs.smudge' \
   'v "node"                  node --version' \
   'v "npm"                   npm --version' \
   'v "psql"                  psql --version' \

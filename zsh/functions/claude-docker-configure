@@ -232,6 +232,12 @@ for _tc_tool in $_tupperclaude_tools; do
 done
 (( tool_enabled[k8s] )) && tool_answers+=("helm=$helm_major")
 
+# $ZDOTDIR when set, not $HOME: that is the file zsh actually reads. Hardcoding
+# $HOME/.zshrc checked the wrong file for these users — it found no source line
+# where one already existed, then appended a duplicate to a file zsh never reads.
+# Both halves silent, and the wizard reported success.
+local zshrc="${ZDOTDIR:-$HOME}/.zshrc"
+
 # ---- 3. generate ~/.tupperclaude.zsh from the template ---------------------
 
 # $template was resolved and checked before the first question — see the top of
@@ -304,7 +310,7 @@ local result=1
         print -r -- "# This file is fully regenerable: re-run claude-docker-configure at any time"
         print -r -- "# (the previous version is backed up alongside it). Nothing else writes it."
         print -r -- "# When uninstalling tupperclaude, delete it and the matching 'source' line"
-        print -r -- "# in your ~/.zshrc:  rm ~/.tupperclaude.zsh"
+        print -r -- "# in your $zshrc:  rm ~/.tupperclaude.zsh"
         print -r -- ""
     )"
     local body
@@ -325,7 +331,7 @@ local result=1
 
     command mv "$tmpfile" "$target"
     print -r -- "Wrote $target — re-run claude-docker-configure to regenerate it,"
-    print -r -- "  and delete it (plus its ~/.zshrc source line) when uninstalling tupperclaude."
+    print -r -- "  and delete it (plus its $zshrc source line) when uninstalling tupperclaude."
     result=0
 } always {
     [[ -f $tmpfile ]] && command rm -f -- "$tmpfile"
@@ -335,11 +341,6 @@ local result=1
 
 # ---- 4. offer to source it from .zshrc -------------------------------------
 
-# $ZDOTDIR when set, not $HOME: that is the file zsh actually reads. Hardcoding
-# $HOME/.zshrc checked the wrong file for these users — it found no source line
-# where one already existed, then appended a duplicate to a file zsh never reads.
-# Both halves silent, and the wizard reported success.
-local zshrc="${ZDOTDIR:-$HOME}/.zshrc"
 # The zshrc is very often a symlink into a dotfiles repo. Resolve it and append
 # in place: rewriting via a temp file and `mv` would replace the symlink with a
 # regular file and silently detach it from the repo. An append needs no temp

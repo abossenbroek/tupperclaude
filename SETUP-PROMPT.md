@@ -273,8 +273,11 @@ This command EXITS NON-ZERO at this point, and that is expected — it is a chec
 not a failure. All of these are expected now:
 
   - the base image for my CPU reported FAIL — you have not built it yet (STEP 6)
-  - any image row marked "info": the images for the other CPU architecture and the
-    two Playwright images. Optional, not missing.
+  - any row marked "info" at all. Those are checks that do not apply to me, and
+    doctor still prints their fix lines underneath — those are not instructions.
+    Expect the images for the other CPU architecture and the two Playwright
+    images, and, if I chose the default network, authkey: without Tailscale there
+    is no key to need.
   - authkey FAIL, if I chose tailscale and export TS_AUTHKEY in my own shell
   - ssh-agent FAIL, if you warned me in STEP 1 that my Docker engine is not Docker
     Desktop
