@@ -355,19 +355,18 @@ fi
 # the file on disk after the container exits. Two copies of this text would mean
 # an edit to one silently stopping the cleanup from ever recognising its own
 # output — the file would simply start accumulating again, with nothing failing.
-# Both sentences below name the optional toolchains, so both are assembled from
-# what this image actually has. Claiming a tool Claude does not have costs it a
-# failed command and a wrong theory about why.
-local md_creds='SSH, GitHub CLI (`gh`), Linear, Pulumi'
+# The TOOLS sentence is assembled from what this image actually has: claiming a
+# tool Claude does not have costs it a failed command and a wrong theory about
+# why. The CREDENTIALS sentence is deliberately NOT the same list. ~/.aws and
+# ~/.config/gcloud are mounted and copied in regardless of the build options —
+# the option decides whether the CLI is present, not whether the credentials
+# are — so gating them told Claude its gcloud credentials were missing while they
+# sat in ~/.config. Only the kubeconfig is genuinely conditional, because only
+# its mount is.
+local md_creds='SSH, GitHub CLI (`gh`), Linear, Pulumi, AWS, Google Cloud'
 local md_tools='claude, gh, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear'
-if _claude_docker_tool enabled aws; then
-    md_creds+=', AWS'
-    md_tools+=', aws'
-fi
-if _claude_docker_tool enabled gcloud; then
-    md_creds+=', Google Cloud (`gcloud`)'
-    md_tools+=', gcloud'
-fi
+_claude_docker_tool enabled aws    && md_tools+=', aws'
+_claude_docker_tool enabled gcloud && md_tools+=', gcloud'
 if _claude_docker_tool enabled k8s; then
     md_creds+=', Kubernetes (`~/.kube/config`, writable in here — logging into another cluster does not touch the host)'
     md_tools+=", kubectl, k9s, helm ($(_claude_docker_opt helm CLAUDE_DOCKER_HELM 3))"

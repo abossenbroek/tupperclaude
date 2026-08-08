@@ -458,12 +458,13 @@ RUN printf '%s\n' \
   '    # plugin, which does not exist here. Rewrite it to the bare binary and' \
   '    # let $PATH resolve it. Guarded alone, not around the copy above: a' \
   '    # kubeconfig with no such stanza is normal, a failed copy is not.' \
-  '    # The class excludes quotes and whitespace rather than listing the' \
-  '    # characters a path may hold: a YAML-quoted value keeps its quotes, and a' \
-  '    # path this cannot express (a ~ prefix, an embedded space) fails to match' \
-  '    # and is left alone. An allowlist got that wrong in the other direction —' \
-  '    # it excluded ~ but included /, so ~/sdk/bin/gke-gcloud-auth-plugin was' \
-  '    # rewritten to the broken name ~gke-gcloud-auth-plugin.' \
+  '    # The class excludes quotes and whitespace rather than listing what a path' \
+  '    # may hold, so a YAML-quoted value keeps its quotes. ~ is INSIDE the class,' \
+  '    # so ~/sdk/bin/… collapses to the bare name too — the allowlist this' \
+  '    # replaced excluded ~ but included /, and turned that into the broken name' \
+  '    # ~gke-gcloud-auth-plugin. A path with an embedded space matches only from' \
+  '    # the last space on, leaving a fragment behind; such a path is broken in' \
+  '    # here either way, so that is a cosmetic loss, not a new one.' \
   '    # Double-quoted because the expression holds [ ] and *: bare, the shell' \
   '    # would glob it against the mounted repo that is cwd here.' \
   "    sed -i \"s#[^[:space:]\\\"']*/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g\" ~/.kube/config || true" \
