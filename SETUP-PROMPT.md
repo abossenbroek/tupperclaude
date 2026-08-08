@@ -27,11 +27,10 @@ Work through the steps in order. Follow these rules the whole way:
 RULES
 - Show me each command before you run it.
 - Ask me before you change any file of mine.
-- Before your first edit to ~/.zshrc, back it up with exactly:
-    test -f ~/.zshrc && cp ~/.zshrc ~/.zshrc.tupperclaude-bak-$(date +%Y%m%d%H%M%S)
-  Show me the backup path afterwards. If I have no ~/.zshrc yet, say so and create it.
-  If ~/.zshrc is a symlink into a dotfiles repo, tell me before you append: the edit
-  lands in that repo, not just on this machine.
+- My zshrc is whatever STEP 2 resolves it to. Do not assume ~/.zshrc anywhere — with
+  ZDOTDIR set, ~/.zshrc is a file zsh never reads, and editing it means editing
+  nothing while the real one silently goes unbacked-up. STEP 2 comes before any edit
+  for exactly this reason; take the backup there.
 - Before adding any line to a file, grep for it first. If it is already there, change
   nothing. Running this whole prompt twice must never duplicate a line.
 - Ask me before starting the image build. It takes about 15 minutes and 9 GB of disk.
@@ -40,9 +39,9 @@ RULES
 - Never write a secret value into any file. If I give you a key, tell me where to
   export it and stop — do not put it in ~/.zshrc or ~/.tupperclaude.zsh.
 - If something fails, stop and show me the exact error. Do not work around it.
-- Do not run `claude-docker-configure`. It is an interactive wizard that needs a real
-  terminal and will refuse to run from a tool call. Ask me the questions yourself
-  (STEP 4) instead.
+- Do not run `claude-docker-configure`. It is an interactive wizard. Without a terminal
+  it refuses to start; with one — some agent runners do allocate a pty — it starts and
+  then blocks on input you cannot type. Ask me the questions yourself (STEP 4) instead.
 
 STEP 1 — Check what I already have
 
@@ -83,32 +82,44 @@ First find where my zshrc actually lives — it is not always ~/.zshrc:
 
   zsh -i -c 'print -r -- "ZDOTDIR=${ZDOTDIR:-$HOME}"'
 
-Use <that>/.zshrc everywhere below and everywhere later in this prompt. Tell me the
-path you settled on.
+Take the text after ZDOTDIR= on the one line that starts with it, and stop if there
+is not exactly one such line — themes print their own output here, and this answer
+decides which file every later edit lands in.
+
+Call the result <zshrc> = <that>/.zshrc, use it everywhere below and everywhere later
+in this prompt, and tell me the path you settled on.
+
+Then back it up, before any edit:
+
+  test -f <zshrc> && cp <zshrc> <zshrc>.tupperclaude-bak-$(date +%Y%m%d%H%M%S)
+
+Show me the backup path. If <zshrc> does not exist yet, say so — you will create it in
+STEP 3. If it is a symlink into a dotfiles repo, tell me before you append: the edit
+lands in that repo, not just on this machine.
 
 Then look at that file and my home directory and tell me which of these I use:
 
   oh-my-zsh   the directory ~/.oh-my-zsh exists
-  zinit       "zinit" appears in ~/.zshrc
-  antidote    "antidote" appears in ~/.zshrc
+  zinit       "zinit" appears in <zshrc>
+  antidote    "antidote" appears in <zshrc>
   sheldon     the file ~/.config/sheldon/plugins.toml exists
   zplug       the directory ~/.zplug exists
-  antigen     "antigen" appears in ~/.zshrc
+  antigen     "antigen" appears in <zshrc>
   none        none of the above
 
 If you find more than one, ask me which to use. Do not guess.
 
 If it is antidote, also tell me which file holds my plugin list, and whether my
-~/.zshrc calls `antidote load` or sources a generated ~/.zsh_plugins.zsh. STEP 3
+<zshrc> calls `antidote load` or sources a generated ~/.zsh_plugins.zsh. STEP 3
 needs to know which.
 
 STEP 3 — Install the plugin
 
 Use the option matching my manager. Show me the exact edit and wait for my approval.
 
-A clone into a directory that already exists is an ERROR, not a failure: it means a
-previous run got this far. Do not delete it and do not stop — leave it alone, or run
-`git -C <that directory> pull --ff-only`, and tell me which you did.
+If the clone target already exists, git prints an error — that is expected, not a
+failure, and it means a previous run got this far. Do not delete it and do not stop:
+leave it alone, or run `git -C <that directory> pull --ff-only`, and tell me which.
 
   oh-my-zsh:
     first resolve the custom directory in zsh, where ZSH_CUSTOM is actually set:
@@ -119,34 +130,41 @@ previous run got this far. Do not delete it and do not stop — leave it alone, 
     take the whole output.
     then, unless <that>/plugins/tupperclaude already exists:
       git clone https://github.com/abossenbroek/tupperclaude <that>/plugins/tupperclaude
-    then add tupperclaude to the existing plugins=(...) line in ~/.zshrc — unless
+    then add tupperclaude to the existing plugins=(...) line in <zshrc> — unless
     it is already in that array, in which case change nothing.
     Edit that line in place — do not add a second plugins=() line, and do not
-    reformat the array. A malformed plugins=() breaks my login shell.
+    reformat the array. The array often spans several lines; insert the word
+    inside the existing parentheses without reflowing them. If you cannot see one
+    unambiguous plugins=( ... ) block, stop and show me the lines instead of
+    guessing. A malformed plugins=() breaks my login shell.
 
-  zinit:      add to ~/.zshrc:  zinit light abossenbroek/tupperclaude
+  zinit:      add to <zshrc>:  zinit light abossenbroek/tupperclaude
   antidote:   add to my antidote plugins file:  abossenbroek/tupperclaude
               Find that file first — it is usually ~/.zsh_plugins.txt, but check what
-              my ~/.zshrc actually references. If my setup is the static kind, where
-              ~/.zshrc sources a generated ~/.zsh_plugins.zsh, adding to the .txt
+              my <zshrc> actually references. If my setup is the static kind, where
+              <zshrc> sources a generated ~/.zsh_plugins.zsh, adding to the .txt
               alone loads nothing; regenerate it too:
                 antidote bundle < ~/.zsh_plugins.txt > ~/.zsh_plugins.zsh
-              If my ~/.zshrc uses `antidote load`, the .txt alone is enough.
+              If my <zshrc> uses `antidote load`, the .txt alone is enough.
   sheldon:    check ~/.config/sheldon/plugins.toml for tupperclaude first; if it is
               not there, run:
                 sheldon add tupperclaude --github abossenbroek/tupperclaude
-  zplug:      add to ~/.zshrc:  zplug "abossenbroek/tupperclaude", use:"tupperclaude.plugin.zsh"
+              Then check <zshrc> for `sheldon source`. If it is missing, nothing
+              sheldon manages loads at all, so add:
+                eval "$(sheldon source)"
+              It has to come before anything that uses a sheldon-managed plugin.
+  zplug:      add to <zshrc>:  zplug "abossenbroek/tupperclaude", use:"tupperclaude.plugin.zsh"
               This line must go ABOVE the existing `zplug load` line, not at the
               end of the file — a declaration after it is ignored.
               then run:  zsh -i -c 'zplug install'
               zplug does not clone on its own; without this the next shell says
               "not installed" and the check below fails.
-  antigen:    add to ~/.zshrc:  antigen bundle abossenbroek/tupperclaude
+  antigen:    add to <zshrc>:  antigen bundle abossenbroek/tupperclaude
               This line must go ABOVE the existing `antigen apply` line, not at
               the end of the file — a bundle after it is ignored.
   none:       unless ~/.tupperclaude already exists:
                 git clone https://github.com/abossenbroek/tupperclaude ~/.tupperclaude
-              then add to ~/.zshrc:  source ~/.tupperclaude/tupperclaude.plugin.zsh
+              then add to <zshrc>:  source ~/.tupperclaude/tupperclaude.plugin.zsh
 
 Then check it loaded:
 
@@ -214,12 +232,13 @@ ALWAYS write the network line, with whichever value I chose — `tailscale` or
 `tailscale`, so omitting it gives me the sidecar I just declined, plus an authkey
 failure nobody expected.
 
-The leave-it-out rule applies only to the yes/no options — aws, gcloud, k8s — and to
-docker-sock, which belongs in the file only if I asked for it off.
+The leave-it-out rule applies only to the yes/no options — aws, gcloud, k8s — to helm,
+which belongs in the file only if I chose Kubernetes, and to docker-sock, which belongs
+there only if I asked for it off.
 
-Then make sure ~/.zshrc sources it. First check whether it already does:
+Then make sure <zshrc> sources it. First check whether it already does:
 
-  grep -n 'tupperclaude.zsh' ~/.zshrc
+  grep -n 'tupperclaude.zsh' <zshrc>
 
 If there is no match, append exactly this line — no guard, no brackets, and it can go
 at the end of the file:
@@ -319,6 +338,11 @@ Finally, tell me these two things:
       zstyle ':omz:plugins:tupperclaude' machine-md off
   - Inside the sandbox I have to sign in to Claude Code again. The sandbox keeps its own
     login, separate from my host.
+  - If I ever run `claude-docker-configure`, it rewrites ~/.tupperclaude.zsh from the
+    template and only restores the options it asks about. Anything else I set — and
+    `docker-sock off` in particular — is dropped, silently, back to its default. It
+    takes a timestamped backup first, so the old file is recoverable. Tell me this
+    only if I actually chose docker-sock off.
 ````
 
 ---

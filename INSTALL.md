@@ -78,6 +78,13 @@ Add to your plugins file (usually `~/.zsh_plugins.txt`):
 abossenbroek/tupperclaude
 ```
 
+If your `.zshrc` sources a generated `~/.zsh_plugins.zsh` rather than calling
+`antidote load`, the line above loads nothing until you regenerate it:
+
+```zsh
+antidote bundle < ~/.zsh_plugins.txt > ~/.zsh_plugins.zsh
+```
+
 ## sheldon
 
 ```zsh
@@ -129,7 +136,11 @@ claude-docker-arm
 ```
 
 `claude-docker-configure` offers to run the build for you at the end; you may not need
-to type it. Run `claude-docker-doctor` **after** the build, not before: it treats the base
+to type it. It regenerates `~/.tupperclaude.zsh` from the template, so any option it
+does not ask about — `docker-sock`, `home`, `dockerfile`, `machine-md` — reverts to its
+default. `docker-sock` is the one worth watching: it defaults to **on**, which is
+equivalent to root on the host. It takes a timestamped backup first, so re-adding a
+dropped line is a copy-paste. Run `claude-docker-doctor` **after** the build, not before: it treats the base
 image for your architecture as a required check, which means on a machine that has not built yet
 it reports a `FAIL` for it and exits non-zero — correct behaviour, but an alarming first
 command.
@@ -176,6 +187,10 @@ It also runs in CI on every push and pull request. Run it before and after any p
    ```zsh
    rm -f ~/.tupperclaude.zsh ~/.tupperclaude.zsh.bak-*
    ```
+
+   If you installed with [SETUP-PROMPT.md](SETUP-PROMPT.md), it also left a backup of
+   your zshrc per run: `rm -f ~/.zshrc.tupperclaude-bak-*` (or the same name under
+   `$ZDOTDIR`).
 
    Then delete `source ~/.tupperclaude.zsh` from `~/.zshrc`. If you leave that line
    behind with the file gone, every new shell prints an error. (The file is written by
