@@ -35,33 +35,12 @@ the root of the plugin directory named `<plugin-dir-name>.plugin.zsh`. That file
 implementation in `zsh/tupperclaude.zsh`. You don't need to know this to install the
 plugin; it's why the ordinary clone-into-plugins-dir workflow below just works.
 
-## Homebrew
+## Let an AI assistant do it
 
-A formula, not a cask — casks install pre-built macOS artifacts, and this is a zsh
-plugin installed from source. There is no tagged release yet, making it `--HEAD` only:
-
-```zsh
-brew tap abossenbroek/tupperclaude
-brew trust abossenbroek/tupperclaude   # Homebrew 6 refuses third-party taps by default
-brew install --HEAD tupperclaude
-```
-
-The `brew trust` step is not optional and not a formality: without it Homebrew 6 stops
-with `Refusing to load formula ... from untrusted tap`. It is asking you to confirm you
-mean to run a third party's install script, which is a fair question.
-
-Homebrew installs the files but cannot edit your `~/.zshrc`; add the source line
-yourself (`brew info tupperclaude` repeats it):
-
-```zsh
-source "$(brew --prefix)/opt/tupperclaude/share/tupperclaude/tupperclaude.plugin.zsh"
-```
-
-Completions register themselves either side of your `compinit` — nothing to add.
-
-`jq` and `zsh` come in as formula dependencies. Docker Desktop deliberately does not:
-it is a cask, and the plugin's own preflight reports a missing Docker better than a
-failed `brew install` would.
+[SETUP-PROMPT.md](SETUP-PROMPT.md) is a prompt you can paste into Claude Code, Warp,
+Codex, Cursor or any coding agent with shell access. It detects your plugin manager,
+asks you the configuration questions, and tests the result — checking with you before it
+changes anything. The rest of this file is the same thing by hand.
 
 ## oh-my-zsh
 
@@ -90,6 +69,20 @@ zinit light abossenbroek/tupperclaude
 zinit's default `as"plugin"` mode already discovers `*.plugin.zsh` at a repo root, which
 this repo has. Do **not** add `as"program"` — that treats the repo as a binary, puts its
 directory on `$PATH` and never sources anything, leaving no command defined.
+
+## antidote
+
+Add to your plugins file (usually `~/.zsh_plugins.txt`):
+
+```
+abossenbroek/tupperclaude
+```
+
+## sheldon
+
+```zsh
+sheldon add tupperclaude --github abossenbroek/tupperclaude
+```
 
 ## antigen
 

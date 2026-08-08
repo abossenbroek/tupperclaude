@@ -55,8 +55,9 @@ jobs:
       - name: Build the release tarball
         run: |
           set -e
-          # git archive, so the tarball holds exactly what is tracked — the same
-          # contents `make test-brew` builds against locally.
+          # git archive, so the tarball holds exactly what is tracked. Plugin
+          # managers install from the repo, so this is an archive OF the release
+          # rather than the thing anyone installs from.
           git archive --format=tar.gz --prefix="tupperclaude-${version}/" \
             -o "tupperclaude-${version}.tar.gz" "$GITHUB_REF_NAME"
           echo "sha256=$(sha256sum "tupperclaude-${version}.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_ENV"
@@ -89,53 +90,3 @@ jobs:
             --generate-notes \
             "tupperclaude-${version}.tar.gz" \
             "tupperclaude-${version}.tar.gz.sigstore"
-
-      # The tarball URL only resolves once the release exists, so the formula is
-      # updated after it, not before.
-      - name: Update the Homebrew tap
-        env:
-          # A PAT with contents:write on abossenbroek/homebrew-tupperclaude.
-          # github.token is scoped to THIS repository and cannot push to the tap.
-          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
-        run: |
-          set -e
-          if [ -z "$TAP_TOKEN" ]; then
-            echo "::warning::TAP_TOKEN is not set — the release exists but the tap still points at HEAD."
-            echo "Add a PAT with contents:write on abossenbroek/homebrew-tupperclaude as the TAP_TOKEN secret."
-            exit 0
-          fi
-
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/tupperclaude-${version}.tar.gz"
-
-          # Insert the stable stanza above `head`, or replace an existing one.
-          # `head` stays: `brew install --HEAD` must keep working after a release.
-          python3 - "$url" "$sha256" "$version" <<'PY'
-          import re, sys, pathlib
-          url, sha, ver = sys.argv[1:4]
-          p = pathlib.Path("Formula/tupperclaude.rb")
-          s = p.read_text()
-          stanza = f'  url "{url}"\n  version "{ver}"\n  sha256 "{sha}"\n'
-          if re.search(r'^  url "', s, re.M):
-              s = re.sub(r'^  url ".*"\n(  version ".*"\n)?  sha256 ".*"\n', stanza, s, count=1, flags=re.M)
-          else:
-              s = re.sub(r'^(  head .*\n)', stanza + r'\1', s, count=1, flags=re.M)
-          assert url in s, "failed to write the stable stanza"
-          p.write_text(s)
-          PY
-
-          # --branch main, not the default branch: the branch brew serves is a
-          # property of the tap that can be changed in its settings, and a
-          # release must not follow it silently.
-          git clone -q --branch main \
-            "https://x-access-token:${TAP_TOKEN}@github.com/abossenbroek/homebrew-tupperclaude.git" /tmp/tap
-          cp Formula/tupperclaude.rb /tmp/tap/Formula/tupperclaude.rb
-          cd /tmp/tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/tupperclaude.rb
-          if git diff --cached --quiet; then
-            echo "tap already up to date"
-          else
-            git commit -q -m "formula: tupperclaude v${version}"
-            git push -q
-          fi
