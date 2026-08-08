@@ -81,6 +81,9 @@ _claude_docker_opt -b machine-md CLAUDE_DOCKER_MACHINE_MD 1 || machine_md_label=
 
 local -A tool_label
 local _tc_tool
+# Defines $_tupperclaude_tools when this function was autoloaded without the
+# plugin shim; without it the loop below runs zero times, in silence.
+_claude_docker_tool list >/dev/null
 for _tc_tool in $_tupperclaude_tools; do
     if _claude_docker_tool enabled $_tc_tool; then
         tool_label[$_tc_tool]=yes

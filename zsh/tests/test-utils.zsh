@@ -305,13 +305,17 @@ if require_fn claude-docker-doctor; then
     # report is built from: an option that can be set but never shown is one
     # nobody can be asked about. The tool rows come from $_tupperclaude_tools,
     # so they cannot silently go missing — helm is outside that array and can.
+    # Anchored on the row format doctor prints — `printf '  %-11s %s\n'` — not on
+    # the bare word: `aws` and `k8s` both appear in doctor's prose elsewhere, so a
+    # substring match would pass with the config block deleted entirely.
     local _t
     for _t in $_tupperclaude_tools; do
-        [[ $out == *"$_t"* ]]
-        check "doctor: the config block names the $_t option" $? "got: $out"
+        [[ $out == *$'\n'"  ${(r:11:)_t} "* ]]
+        check "doctor: the config block has a row for the $_t option" $? "got: $out"
     done
-    [[ $out == *helm*3* ]]
-    check "doctor: the config block names the helm option and its value" $? "got: $out"
+    _t=helm
+    [[ $out == *$'\n'"  ${(r:11:)_t} 3"* ]]
+    check "doctor: the config block has a helm row carrying its value" $? "got: $out"
 
     # doctor is read-only: it may inspect, but must never run, build, stop,
     # remove or prune anything. This is the assertion that keeps it safe to run

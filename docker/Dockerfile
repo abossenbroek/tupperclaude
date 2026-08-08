@@ -18,7 +18,7 @@
 #
 # There are four deliberate exceptions, each documented again at its own layer:
 #
-#   1. Claude Code (layer 13) is NOT version-pinned and NOT checksum-verified: it
+#   1. Claude Code (layer 15) is NOT version-pinned and NOT checksum-verified: it
 #      tracks the `latest` channel by design so the image matches a freshly
 #      upgraded host, and it is installed through the vendor's own
 #      `curl https://claude.ai/install.sh | bash` bootstrap — the one such pipe in
@@ -458,11 +458,15 @@ RUN printf '%s\n' \
   '    # plugin, which does not exist here. Rewrite it to the bare binary and' \
   '    # let $PATH resolve it. Guarded alone, not around the copy above: a' \
   '    # kubeconfig with no such stanza is normal, a failed copy is not.' \
-  '    # The character class is path characters only, so a YAML-quoted value' \
-  '    # keeps its quotes; [^ ]* would swallow the opening one and strip it.' \
+  '    # The class excludes quotes and whitespace rather than listing the' \
+  '    # characters a path may hold: a YAML-quoted value keeps its quotes, and a' \
+  '    # path this cannot express (a ~ prefix, an embedded space) fails to match' \
+  '    # and is left alone. An allowlist got that wrong in the other direction —' \
+  '    # it excluded ~ but included /, so ~/sdk/bin/gke-gcloud-auth-plugin was' \
+  '    # rewritten to the broken name ~gke-gcloud-auth-plugin.' \
   '    # Double-quoted because the expression holds [ ] and *: bare, the shell' \
   '    # would glob it against the mounted repo that is cwd here.' \
-  '    sed -i "s#[A-Za-z0-9_./-]*/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g" ~/.kube/config || true' \
+  "    sed -i \"s#[^[:space:]\\\"']*/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g\" ~/.kube/config || true" \
   'fi' \
   'if [ -d /run/host-linear ]; then' \
   '    mkdir -p ~/.config/linear' \

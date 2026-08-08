@@ -121,6 +121,9 @@ fi
 # detectable.
 local -A tool_included
 local _tc_tool answer
+# Defines $_tupperclaude_tools when this function was autoloaded without the
+# plugin shim; without it the loop below runs zero times, in silence.
+_claude_docker_tool list >/dev/null
 for _tc_tool in $_tupperclaude_tools; do
     answer=''
     if [[ "$_tc_variant" == playwright ]]; then

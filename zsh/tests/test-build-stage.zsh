@@ -286,7 +286,7 @@ zstyle -d ':omz:plugins:tupperclaude' aws
 # mutation that would ship gcloud and k8s with no build-arg and no label. This
 # block derives its expectations from the table, so a tool added to the array
 # and forgotten in the build fails here.
-_t=''; _arg=''; _label=''
+local _t='' _arg='' _label=''
 for _t in $_tupperclaude_tools; do
     _arg="$(_claude_docker_tool arg $_t)"
     _label="$(_claude_docker_tool label $_t)"
@@ -336,6 +336,25 @@ for _t in $_tupperclaude_tools; do
 
     zstyle -d ':omz:plugins:tupperclaude' $_t
 done
+
+# --- the table survives without the plugin shim -------------------------------
+#
+# $_tupperclaude_tools used to be defined only in zsh/tupperclaude.zsh, but every
+# function here is autoloadable on its own and an fpath-only install is supported
+# — claude-docker-configure reasons about exactly that case. With the array
+# unset, each `for _tc_tool in $_tupperclaude_tools` ran zero times: the user set
+# `aws on`, the build passed no INCLUDE_AWS, stamped no label, and said success.
+# The tests above all run with the shim sourced, so none of them saw it.
+zstyle ':omz:plugins:tupperclaude' aws on
+unset _tupperclaude_tools
+reset_docker_log
+command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+_claude_docker_build arm64 base >/dev/null 2>&1
+load_docker_log
+records_matching build INCLUDE_AWS=1
+(( ${#reply} == 1 ))
+check "build: the tool table works when the plugin shim never ran" $? "${#reply} record(s)"
+zstyle -d ':omz:plugins:tupperclaude' aws
 
 # --- the helm major: a value, not a flag --------------------------------------
 #

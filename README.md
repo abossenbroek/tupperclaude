@@ -360,7 +360,8 @@ from application-default credentials.
 - **default:** `3`
 - **read at:** build time — and at run time, for the mismatch warning
 
-Which Helm major to install. Only consulted when `k8s` is on. Anything other than
+Which Helm major to install. It only changes the image when `k8s` is on, but the
+value is checked on every build — a typo is a typo either way. Anything other than
 `3`, `4` or `both` is refused before the build starts, rather than by the Dockerfile
 at the end of one.
 
@@ -377,7 +378,7 @@ Under `both`, `helm3` and `helm4` are installed side by side and bare `helm` is 
 symlink to `helm3`, the conservative default. The two **share** `~/.config/helm`,
 `~/.cache/helm` and `~/.local/share/helm`, and Helm 4 can rewrite `repository.yaml`
 in a shape Helm 3 will not read. If you hit that, `helm3 repo update` rewrites it
-back.
+back; setting `HELM_CONFIG_HOME` per major keeps them apart for good.
 
 ### `home`
 
