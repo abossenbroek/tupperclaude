@@ -335,8 +335,12 @@ local result=1
 
 # ---- 4. offer to source it from .zshrc -------------------------------------
 
-local zshrc="$HOME/.zshrc"
-# ~/.zshrc is very often a symlink into a dotfiles repo. Resolve it and append
+# $ZDOTDIR when set, not $HOME: that is the file zsh actually reads. Hardcoding
+# $HOME/.zshrc checked the wrong file for these users — it found no source line
+# where one already existed, then appended a duplicate to a file zsh never reads.
+# Both halves silent, and the wizard reported success.
+local zshrc="${ZDOTDIR:-$HOME}/.zshrc"
+# The zshrc is very often a symlink into a dotfiles repo. Resolve it and append
 # in place: rewriting via a temp file and `mv` would replace the symlink with a
 # regular file and silently detach it from the repo. An append needs no temp
 # file, and a partial append is not the risk a partial rewrite is.

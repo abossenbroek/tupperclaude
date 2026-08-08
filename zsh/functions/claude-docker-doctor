@@ -7,11 +7,12 @@
 # detect → explain → copy-pasteable-command shape.
 #
 # "info" (as opposed to "FAIL") marks checks that most setups will
-# legitimately not have: the playwright images (most users only need base),
+# legitimately not have: the playwright images (most users only need base) and
 # the foreign-architecture images (a machine that has never cross-built is
-# healthy), and op-signin (only relevant if an op-ref is configured at all).
-# Everything else is required, and a required failure makes this exit
-# non-zero.
+# healthy). Everything else is required, and a required failure makes this exit
+# non-zero — op-signin included: it is added only when an op-ref is configured,
+# but once it is, a reference that will not resolve means no auth key at run
+# time.
 #
 # The report is printed in two sections — environment checks, then images —
 # because a single column wide enough for `claude-code-full-playwright-arm64`
