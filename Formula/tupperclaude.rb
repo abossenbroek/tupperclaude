@@ -3,26 +3,31 @@
 # A formula, not a cask: casks install pre-built macOS artifacts (.app/.pkg/
 # .dmg), and this is a zsh plugin installed from source.
 #
-# There is no tagged release yet, so this is HEAD-only — `brew install --HEAD`.
-# When v0.1.0 is cut, add the stable stanza above `head`:
+# The stable url/version/sha256 stanza is written by .github/workflows/release.yml
+# when a tag is pushed; `head` stays alongside it so `brew install --HEAD` keeps
+# tracking main. Editing the stable stanza by hand means the next release
+# overwrites it.
 #
-#     url "https://github.com/abossenbroek/tupperclaude/archive/refs/tags/v0.1.0.tar.gz"
-#     sha256 "<shasum -a 256 of that tarball>"
-#
-# `make test-brew` does not depend on that release existing: it packages the
-# current working tree into a tarball and builds the formula against it, so the
-# packaging is exercised today rather than after the first tag.
+# `make test-brew` does not read either stanza: it packages the current working
+# tree into a tarball and builds the formula against that, so packaging is
+# exercised before a tag rather than after it.
 class Tupperclaude < Formula
   desc "Run Claude Code in a sandboxed Docker container"
   homepage "https://github.com/abossenbroek/tupperclaude"
   head "https://github.com/abossenbroek/tupperclaude.git", branch: "main"
   license any_of: ["MIT", "BSD-3-Clause"]
 
-  # jq is a hard runtime dependency, not a nicety: claude-ts-ensure pipes
-  # through it, and the wizard's preflight fails without it. Docker itself is
-  # deliberately NOT a dependency — it is Docker Desktop, a cask, and the
-  # plugin's own preflight checks for it with a better message than a failed
-  # brew install would give.
+  # zsh is the runtime: this is a zsh plugin and nothing here loads under bash.
+  # jq is equally hard — claude-ts-ensure pipes through it and the wizard's
+  # preflight fails without it.
+  #
+  # Everything else is deliberately absent. Homebrew dropped `=> :recommended`
+  # and `=> :optional` along with `--without-*`, so a "recommended" dependency
+  # today installs unconditionally; the companions listed in caveats would
+  # become mandatory downloads for users who want none of them. Docker Desktop
+  # is a cask, and the plugin's own preflight reports it missing far better than
+  # a failed brew install would. oh-my-zsh has no formula at all — it installs
+  # via its own script, and the plugin works without it.
   depends_on "jq"
   depends_on "zsh"
 
@@ -45,12 +50,23 @@ class Tupperclaude < Formula
 
         source #{opt_pkgshare}/tupperclaude.plugin.zsh
 
+      Under oh-my-zsh, source the same line after the `source $ZSH/oh-my-zsh.sh`
+      line. Completions bind in either compinit order — nothing extra to add.
+
       Then set it up (needs Docker Desktop running):
 
         claude-docker-configure
 
-      Completions are registered by the plugin itself, in either compinit
-      order — nothing extra to add.
+      Required, and not installable as a formula:
+        Docker Desktop      brew install --cask docker-desktop
+
+      Optional, each enabling one wizard answer. The credentials these write on
+      the host are what the sandbox mounts, so install the ones you want before
+      running the wizard:
+        tailscale           brew install tailscale
+        awscli              brew install awscli
+        google-cloud-sdk    brew install --cask google-cloud-sdk
+        kubectl, k9s        brew install kubernetes-cli k9s
     EOS
   end
 

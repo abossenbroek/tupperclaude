@@ -34,6 +34,12 @@ jobs:
       - name: Check the tag is signed
         run: |
           set -e
+          # actions/checkout leaves refs/tags/<tag> pointing at the COMMIT, so
+          # the annotated tag object holding the signature is absent until it is
+          # fetched by hand. Without this, cat-file reports "bad file" and every
+          # tag looks unsigned.
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
           # `make release` signs with git tag -s. An unsigned tag means the tag
           # object was written by something other than that path — the one signal
           # available here that the release was not cut as intended.
