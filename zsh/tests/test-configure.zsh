@@ -457,22 +457,38 @@ check "wizard: an unknown argument uses the house error style" $? "got: $out"
 # ${(pl:...::y\n:)} repeats the answer once per tool without a command
 # substitution — $(...) strips the trailing newline, which leaves the final
 # answer unterminated and unread.
+#
+# Answering yes to k8s adds ONE further question — the helm major — so the
+# stream carries a trailing answer for it. Getting that count wrong is the
+# desynchronisation this wizard's header warns about at length.
 local answers
 answers="${(pl:$(( $#_tupperclaude_tools * 2 ))::y\n:)}"
-run_wizard "2"$'\n'"$answers"
+run_wizard "2"$'\n'"$answers"$'both\n'
 local tool
 for tool in $_tupperclaude_tools; do
     [[ $cfg == *"zstyle ':omz:plugins:tupperclaude' $tool 'on'"* ]]
     check "wizard: answering yes to $tool writes its zstyle line" $? "config: $cfg"
 done
+[[ $cfg == *"zstyle ':omz:plugins:tupperclaude' helm 'both'"* ]]
+check "wizard: the helm answer that follows k8s=yes is recorded" $? "config: $cfg"
 
 # And answering no to all of them leaves every one out, so a template stanza
-# uncommented unconditionally cannot pass the check above.
+# uncommented unconditionally cannot pass the check above. No helm answer here:
+# with k8s off the question is not asked, and feeding one would desynchronise.
 answers="${(pl:$(( $#_tupperclaude_tools * 2 ))::n\n:)}"
 run_wizard "2"$'\n'"$answers"
 for tool in $_tupperclaude_tools; do
     [[ $cfg != *"' $tool 'on'"* ]]
     check "wizard: answering no to $tool leaves it out of the config" $? "config: $cfg"
 done
+[[ $cfg != *"' helm '"* ]]
+check "wizard: no helm question is asked when k8s is off" $? "config: $cfg"
+
+# The template stanza has to exist for the substitution above to have anything
+# to uncomment. helm is deliberately NOT in $_tupperclaude_tools — it carries a
+# value, not a flag — so the array-driven loop above cannot cover it.
+local -r tmpl="$TUPPERCLAUDE_ZSH_DIR/templates/tupperclaude.zsh"
+command grep -q "^# zstyle ':omz:plugins:tupperclaude' helm 3\$" $tmpl
+check "template: carries a commented helm stanza for the wizard to uncomment" $? "$tmpl"
 
 test_summary

@@ -187,6 +187,9 @@ typeset -gA TC_MOUNT_MUST_BE_FILE=(
     /home/agent/.inputrc                     1
     /run/tmux-launch.sh                      1
     /run/netwatch.sh                         1
+    # The kubeconfig alone, never the ~/.kube directory around it — that holds a
+    # cluster inventory and a cached GKE token the sandbox has no use for.
+    /run/host-kube/config                    1
 )
 
 # Container destinations whose host side must be a DIRECTORY.

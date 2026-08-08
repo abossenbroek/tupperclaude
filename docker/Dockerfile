@@ -16,24 +16,29 @@
 #   * every RUN uses `bash -o pipefail`, so a failed download in a pipeline fails
 #     the build instead of feeding an empty file to the next stage
 #
-# There are four deliberate exceptions, each documented again at its own layer:
+# There are five deliberate exceptions, each documented again at its own layer:
 #
-#   1. Claude Code (layer 14) is NOT version-pinned and NOT checksum-verified: it
+#   1. Claude Code (layer 13) is NOT version-pinned and NOT checksum-verified: it
 #      tracks the `latest` channel by design so the image matches a freshly
 #      upgraded host, and it is installed through the vendor's own
 #      `curl https://claude.ai/install.sh | bash` bootstrap — the one such pipe in
-#      this file. Everything else (pulumi, rustup, deno, mise) deliberately uses
-#      the release tarball instead of the vendor's `curl … | sh` script, because
-#      only the tarball has a published checksum to verify against.
-#   2. aws-cli (layer 11, optional) has no vendor-published checksum file — AWS
+#      this file. Everything else (pulumi, rustup, deno, mise, helm, k9s)
+#      deliberately uses the release tarball instead of the vendor's
+#      `curl … | sh` script, because only the tarball has a published checksum to
+#      verify against.
+#   2. aws-cli (layer 10, optional) has no vendor-published checksum file — AWS
 #      publishes a GPG signature only. The sha256 in the ARG was computed once
 #      from the pinned artifact by us and is verified on every build.
-#   3. linear-cli (layer 10) is version-pinned but has no checksum of our own:
+#   3. linear-cli (layer 9) is version-pinned but has no checksum of our own:
 #      `deno install jsr:…@X.Y.Z` resolves module integrity against JSR's own
 #      per-version manifest, and there is no single artifact for us to hash.
-#   4. uv (layer 7) is not an ARG+sha256 pin but a `COPY --from` an immutable
+#   4. uv (layer 6) is not an ARG+sha256 pin but a `COPY --from` an immutable
 #      image digest. That is stronger, not weaker: the digest covers the whole
 #      multi-arch manifest.
+#   5. The Google Cloud SDK and the GKE auth plugin (layer 11, optional) come
+#      from a keyring-pinned apt repository, so they carry the repo's signature
+#      rather than a version we pin. apt has no way to express "this exact
+#      version and no other" against a moving repository.
 #
 # Bump ARGs deliberately. To refresh a checksum, take it from the vendor's own
 # published checksum file — see README.md, "Updating pinned versions".
@@ -84,6 +89,8 @@ RUN curl -fsSL "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.ph
 # The keyring is downloaded to the file directly (no pipe into a writer) and
 # checked non-empty before apt is pointed at it: a zero-byte keyring is accepted
 # silently at install time and only surfaces as an opaque apt signature error.
+# The optional Google Cloud layer near the end of this file applies the same
+# keyring pattern through a pipe; see the note there for why that is also safe.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     [ -s /usr/share/keyrings/githubcli-archive-keyring.gpg ] && \
@@ -92,17 +99,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
-# ── Layer 4: Google Cloud CLI ────────────────────────────────────────────────
-# Safe to pipe: `set -o pipefail` (SHELL, above) propagates a curl failure, and
-# gpg --dearmor rejects empty input rather than writing an empty keyring.
-RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
-      | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
-    [ -s /usr/share/keyrings/cloud.google.gpg ] && \
-    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
-      > /etc/apt/sources.list.d/google-cloud-sdk.list && \
-    apt-get update && apt-get install -y google-cloud-cli && rm -rf /var/lib/apt/lists/*
-
-# ── Layer 5: yq (YAML processor) ─────────────────────────────────────────────
+# ── Layer 4: yq (YAML processor) ─────────────────────────────────────────────
 ARG YQ_VERSION=v4.53.2
 ARG YQ_SHA256_ARM64=03061b2a50c7a498de2bbb92d7cb078ce433011f085a4994117c2726be4106ea
 ARG YQ_SHA256_AMD64=d56bf5c6819e8e696340c312bd70f849dc1678a7cda9c2ad63eebd906371d56b
@@ -116,7 +113,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     echo "${sha}  /usr/local/bin/yq" | sha256sum -c - && \
     chmod +x /usr/local/bin/yq
 
-# ── Layer 6: Tailscale CLI (client only — tailscaled runs in the sidecar) ────
+# ── Layer 5: Tailscale CLI (client only — tailscaled runs in the sidecar) ────
 # claude-docker joins a per-directory Tailscale sidecar's network namespace, so
 # the tunnel is already up; this only adds the CLI so `tailscale status/ip/ping/
 # whois` work from inside. The sidecar shares its control socket through a named
@@ -139,7 +136,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     install -m 0755 "/tmp/tailscale_${TAILSCALE_VERSION}_${arch}/tailscale" /usr/local/bin/tailscale && \
     rm -rf /tmp/tailscale.tgz "/tmp/tailscale_${TAILSCALE_VERSION}_${arch}"
 
-# ── Layer 7: uv (fast Python package manager) ────────────────────────────────
+# ── Layer 6: uv (fast Python package manager) ────────────────────────────────
 # Copy BOTH uv and uvx: a baked ~/.claude.json may run MCP servers via uvx, so
 # the image must ship it. (The build function rewrites the macOS path
 # /opt/homebrew/bin/uvx → /usr/local/bin/uvx in the baked config.)
@@ -150,7 +147,7 @@ RUN arch="$(dpkg --print-architecture)" && \
 COPY --from=ghcr.io/astral-sh/uv:0.11.18@sha256:78bc42400d77b0678ba95765305c826652ed5431f399257271dda681d0318f03 /uv /usr/local/bin/uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.18@sha256:78bc42400d77b0678ba95765305c826652ed5431f399257271dda681d0318f03 /uvx /usr/local/bin/uvx
 
-# ── Layer 8: Pulumi CLI (IaC) ────────────────────────────────────────────────
+# ── Layer 7: Pulumi CLI (IaC) ────────────────────────────────────────────────
 # Installed under /usr/local so the non-root `agent` user can run pulumi (a /root
 # or ~/.pulumi install would be unreadable/private). Auth is supplied at runtime
 # via a mounted ~/.pulumi/credentials.json and/or PULUMI_ACCESS_TOKEN. The Python
@@ -175,7 +172,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     rm -f /tmp/pulumi.tgz && \
     chmod -R a+rX /usr/local/pulumi
 
-# ── Layer 9: Rust toolchain + dev tools (rustfmt, clippy, rust-analyzer) ─────
+# ── Layer 8: Rust toolchain + dev tools (rustfmt, clippy, rust-analyzer) ─────
 # Installed under /usr/local (world-readable) so the non-root `agent` user can
 # read the toolchain and run cargo/rustc. A /root install (mode 700) leaves the
 # binaries unreadable for agent. RUSTUP_HOME is pinned so the rustup proxies find
@@ -206,7 +203,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     CARGO_HOME=/usr/local/cargo rustup component add rust-analyzer && \
     chmod -R a+rX /usr/local/rustup /usr/local/cargo
 
-# ── Layer 10: Deno + linear-cli ──────────────────────────────────────────────
+# ── Layer 9: Deno + linear-cli ──────────────────────────────────────────────
 # DENO_DIR holds the pre-built module cache; owned by `agent` so the CLI can also
 # write the runtime v8 code cache there (read-only would fail with CannotOpen).
 # The release zip is used rather than `curl deno.land/install.sh | sh`, because
@@ -242,7 +239,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     cp /root/.deno/bin/linear /usr/local/bin/linear && \
     sed -i 's|/root/.deno/bin/.linear/|/usr/local/lib/linear-deno/|g' /usr/local/bin/linear
 
-# ── Layer 11 (optional): AWS CLI v2 ──────────────────────────────────────────
+# ── Layer 10 (optional): AWS CLI v2 ──────────────────────────────────────────
 # Off by default; enable with --build-arg INCLUDE_AWS=1 (the zsh plugin sets this
 # when CLAUDE_DOCKER_INCLUDE_AWS is exported).
 #
@@ -268,6 +265,112 @@ RUN if [ "$INCLUDE_AWS" = "1" ]; then \
       chmod -R a+rX /usr/local/aws-cli ; \
     fi
 
+# ── Layer 11 (optional): Google Cloud SDK + GKE auth plugin ──────────────────
+# Off by default; enable with --build-arg INCLUDE_GCLOUD=1.
+#
+# Position matters more than it looks. This used to be layer 4, where the build
+# arg became part of the cache key for every layer below it — so toggling the
+# option re-ran the Rust toolchain, deno, pulumi and three npm rounds: ~3.2 GB
+# and most of a 15-minute build, every time, forever. Down here it forks only
+# the same short tail INCLUDE_AWS already forks.
+#
+# With the option off, /etc/apt/sources.list.d/google-cloud-sdk.list is never
+# written either, so a default image carries no third-party apt repo that an
+# in-sandbox `apt-get install` would silently consult.
+#
+# EXCEPTION 5: these are apt packages, so they carry the repository's signature
+# rather than a version we pin — apt cannot express "this exact version and no
+# other" against a moving repository. The keyring is what is pinned.
+#
+# Safe to pipe: `set -o pipefail` (SHELL, above) propagates a curl failure, and
+# gpg --dearmor rejects empty input rather than writing an empty keyring. The
+# keyring is then checked non-empty before apt is pointed at it — an empty one
+# is accepted silently and surfaces only as an opaque signature error.
+#
+# gke-gcloud-auth-plugin rides along with gcloud rather than with k8s: it
+# declares no dependencies at all (~9 MB), and it is useless without the SDK,
+# which mints the tokens it hands to kubectl.
+ARG INCLUDE_GCLOUD=0
+RUN if [ "$INCLUDE_GCLOUD" = "1" ]; then \
+      curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+        | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
+      [ -s /usr/share/keyrings/cloud.google.gpg ] && \
+      echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+        > /etc/apt/sources.list.d/google-cloud-sdk.list && \
+      apt-get update && \
+      apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin && \
+      rm -rf /var/lib/apt/lists/* ; \
+    fi
+
+# ── Layer 12 (optional): kubectl, helm and k9s ───────────────────────────────
+# Off by default; enable with --build-arg INCLUDE_K8S=1.
+#
+# HELM_MAJOR selects which helm ships: 3, 4, or both. The two majors are both
+# maintained and charts written for 3 do not all render under 4, so the choice
+# is the user's. Bare `helm` is a symlink — helm does not dispatch on argv[0],
+# so a copy would cost another 55-60 MB for nothing — and under `both` it points
+# at helm3, the conservative default.
+#
+# Both helm tarballs unpack to the same linux-<arch>/ directory, hence the rm
+# between them; the k9s tarball is FLAT, so it is extracted into a directory of
+# its own rather than scattering LICENSE and README.md across /tmp.
+#
+# k9s is ~123 MB of the ~235 MB this layer adds. That is the only artifact its
+# vendor publishes — there is no slimmer build to prefer.
+ARG INCLUDE_K8S=0
+ARG HELM_MAJOR=3
+ARG KUBECTL_VERSION=v1.36.3
+ARG KUBECTL_SHA256_ARM64=3d86f24401c41ae5a46ac50eef8865fe891d3647d324a0836f6c63757a126e62
+ARG KUBECTL_SHA256_AMD64=ebbd080e7c2e275093b55915722043257eb24004363e20acb3c4d71919f88336
+ARG HELM3_VERSION=v3.21.3
+ARG HELM3_SHA256_ARM64=67f58155079ff9ffab98ba5c88daff0ed9b542f3a4732f5dd426dde7dd0f5244
+ARG HELM3_SHA256_AMD64=15e041a93a590dce8100f39385cd98c84a765c9e36aeeb9e2dc6ff9e4769e2e0
+ARG HELM4_VERSION=v4.2.3
+ARG HELM4_SHA256_ARM64=21abd9354d39b2cd79a8d76be6912cd137a983cbf997193503fb8a6a6e2f2785
+ARG HELM4_SHA256_AMD64=e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c
+ARG K9S_VERSION=v0.51.0
+ARG K9S_SHA256_ARM64=3ee05c82e5f9198928a4e86133608ba6a2c10a2244d6a7789e820f78319d640c
+ARG K9S_SHA256_AMD64=c3752ad51a5a4015a113819c4eeb6e55a4d0e4b8e652494797532f6fc8161dd7
+RUN if [ "$INCLUDE_K8S" = "1" ]; then \
+      arch="$(dpkg --print-architecture)" && \
+      case "$arch" in \
+        arm64) kubectl_sha="$KUBECTL_SHA256_ARM64"; helm3_sha="$HELM3_SHA256_ARM64"; helm4_sha="$HELM4_SHA256_ARM64"; k9s_sha="$K9S_SHA256_ARM64" ;; \
+        amd64) kubectl_sha="$KUBECTL_SHA256_AMD64"; helm3_sha="$HELM3_SHA256_AMD64"; helm4_sha="$HELM4_SHA256_AMD64"; k9s_sha="$K9S_SHA256_AMD64" ;; \
+        *) echo "unsupported arch for the k8s toolchain: $arch" >&2; exit 1 ;; \
+      esac && \
+      case "$HELM_MAJOR" in \
+        3|4|both) : ;; \
+        *) echo "HELM_MAJOR must be 3, 4 or both: got '$HELM_MAJOR'" >&2; exit 1 ;; \
+      esac && \
+      curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl" -o /usr/local/bin/kubectl && \
+      echo "${kubectl_sha}  /usr/local/bin/kubectl" | sha256sum -c - && \
+      chmod +x /usr/local/bin/kubectl && \
+      if [ "$HELM_MAJOR" = "3" ] || [ "$HELM_MAJOR" = "both" ]; then \
+        curl -fsSL "https://get.helm.sh/helm-${HELM3_VERSION}-linux-${arch}.tar.gz" -o /tmp/helm3.tgz && \
+        echo "${helm3_sha}  /tmp/helm3.tgz" | sha256sum -c - && \
+        tar -xzf /tmp/helm3.tgz -C /tmp "linux-${arch}/helm" && \
+        install -m 0755 "/tmp/linux-${arch}/helm" /usr/local/bin/helm3 && \
+        rm -rf /tmp/helm3.tgz "/tmp/linux-${arch}" ; \
+      fi && \
+      if [ "$HELM_MAJOR" = "4" ] || [ "$HELM_MAJOR" = "both" ]; then \
+        curl -fsSL "https://get.helm.sh/helm-${HELM4_VERSION}-linux-${arch}.tar.gz" -o /tmp/helm4.tgz && \
+        echo "${helm4_sha}  /tmp/helm4.tgz" | sha256sum -c - && \
+        tar -xzf /tmp/helm4.tgz -C /tmp "linux-${arch}/helm" && \
+        install -m 0755 "/tmp/linux-${arch}/helm" /usr/local/bin/helm4 && \
+        rm -rf /tmp/helm4.tgz "/tmp/linux-${arch}" ; \
+      fi && \
+      if [ "$HELM_MAJOR" = "4" ]; then \
+        ln -sf /usr/local/bin/helm4 /usr/local/bin/helm ; \
+      else \
+        ln -sf /usr/local/bin/helm3 /usr/local/bin/helm ; \
+      fi && \
+      curl -fsSL "https://github.com/derailed/k9s/releases/download/${K9S_VERSION}/k9s_Linux_${arch}.tar.gz" -o /tmp/k9s.tgz && \
+      echo "${k9s_sha}  /tmp/k9s.tgz" | sha256sum -c - && \
+      mkdir -p /tmp/k9s && tar -xzf /tmp/k9s.tgz -C /tmp/k9s k9s && \
+      install -m 0755 /tmp/k9s/k9s /usr/local/bin/k9s && \
+      rm -rf /tmp/k9s.tgz /tmp/k9s ; \
+    fi
+
 # ── versions command ─────────────────────────────────────────────────────────
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -280,6 +383,9 @@ RUN printf '%s\n' \
   'v "claude"                claude --version' \
   'v "gh"                    gh --version' \
   'v "gcloud"                gcloud --version' \
+  'v "kubectl"               kubectl version --client' \
+  'v "helm"                  helm version --short' \
+  'v "k9s"                   k9s version --short' \
   'v "ripgrep (rg)"          rg --version' \
   'v "yq"                    yq --version' \
   'v "tmux"                  tmux -V' \
@@ -338,6 +444,22 @@ RUN printf '%s\n' \
   '    mkdir -p ~/.config/gcloud' \
   '    cp -r /run/host-gcloud/. ~/.config/gcloud/' \
   'fi' \
+  '# Only ~/.kube/config is mounted, never the whole ~/.kube: the rest is a' \
+  '# discovery cache keyed by API-server IP (an inventory of every cluster the' \
+  '# host has ever reached) plus a live GKE access token, none of which the' \
+  '# sandbox needs. The copy is writable, so `gcloud container clusters' \
+  '# get-credentials` in here adds contexts the host file never sees.' \
+  'if [ -f /run/host-kube/config ]; then' \
+  '    mkdir -p ~/.kube' \
+  '    cp /run/host-kube/config ~/.kube/config' \
+  '    chmod 700 ~/.kube' \
+  '    chmod 600 ~/.kube/config' \
+  '    # A kubeconfig written on macOS names the Homebrew path for the GKE auth' \
+  '    # plugin, which does not exist here. Rewrite it to the bare binary and' \
+  '    # let $PATH resolve it. Guarded alone, not around the copy above: a' \
+  '    # kubeconfig with no such stanza is normal, a failed copy is not.' \
+  '    sed -i "s#[^\\"]*/google-cloud-sdk/bin/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g" ~/.kube/config || true' \
+  'fi' \
   'if [ -d /run/host-linear ]; then' \
   '    mkdir -p ~/.config/linear' \
   '    cp -r /run/host-linear/. ~/.config/linear/' \
@@ -363,7 +485,7 @@ RUN printf '%s\n' \
 
 USER agent
 
-# ── Layer 12: mise (runtime version manager — must not shadow system node) ───
+# ── Layer 11: mise (runtime version manager — must not shadow system node) ───
 # Installed from the release binary + published SHASUMS256.txt entry rather than
 # `curl mise.run | sh`, so it is verified like everything else.
 ARG MISE_VERSION=v2026.5.18
@@ -381,7 +503,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     chmod +x "$HOME/.local/bin/mise" && \
     echo 'eval "$($HOME/.local/bin/mise activate bash)"' >> ~/.bashrc
 
-# ── Layer 13: npm-based LSP servers + SvelteKit stack ────────────────────────
+# ── Layer 12: npm-based LSP servers + SvelteKit stack ────────────────────────
 # pyright / typescript-language-server back the pyright-lsp / typescript-lsp
 # plugins. For SvelteKit we add the Svelte language server + svelte-check
 # (.svelte type-checking/diagnostics) — there is no official svelte-lsp plugin,
@@ -405,7 +527,7 @@ RUN npm install -g --ignore-scripts \
 # --ignore-scripts; pinned exact instead.
 RUN npm install -g bun@1.3.14
 
-# ── Layer 14 (per-build cache-bust): update claude-code ──────────────────────
+# ── Layer 13 (per-build cache-bust): update claude-code ──────────────────────
 # The base image installs Claude Code natively (~/.local/bin via install.sh).
 # Re-run the same native installer to pull the latest build, rather than adding a
 # second copy via `npm install -g` (which `/doctor` flags as a leftover/duplicate
@@ -427,7 +549,7 @@ RUN npm install -g bun@1.3.14
 ARG BUILD_DATE=unknown
 RUN echo "Build date: $BUILD_DATE" && curl -fsSL https://claude.ai/install.sh | bash -s latest
 
-# ── Layer 15: baked non-secret config ────────────────────────────────────────
+# ── Layer 14: baked non-secret config ────────────────────────────────────────
 # claude.json      = ~/.claude.json  (account prefs, non-secret)
 # claude-settings/ = whitelist of ~/.claude/ (skills, plugins, commands,
 #                    CLAUDE.md, settings.json)

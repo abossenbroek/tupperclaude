@@ -200,12 +200,29 @@ for _tc_tool in $_tupperclaude_tools; do
     print -r -- "  -> $_tc_tool = $( (( tool_enabled[$_tc_tool] )) && print on || print off )"
 done
 
+# Asked only when k8s is on: with no toolchain in the image there is no helm for
+# the answer to apply to, and a question whose answer changes nothing is worse
+# than one not asked.
+local helm_major=3
+if (( tool_enabled[k8s] )); then
+    read -r "key?Which Helm major? 3 (default), 4, or both: "
+    case $key in
+        4)    helm_major=4 ;;
+        both) helm_major=both ;;
+        # Anything unrecognised takes the default rather than re-asking: the
+        # value is echoed back below, and this file is regenerable.
+        *)    helm_major=3 ;;
+    esac
+    print -r -- "  -> helm = $helm_major"
+fi
+
 # Recorded verbatim in the generated file's header, so a bug report shows what
 # was answered without anyone having to re-run the wizard.
 local -a tool_answers=()
 for _tc_tool in $_tupperclaude_tools; do
     tool_answers+=("$_tc_tool=$tool_enabled[$_tc_tool]")
 done
+(( tool_enabled[k8s] )) && tool_answers+=("helm=$helm_major")
 
 # ---- 3. generate ~/.tupperclaude.zsh from the template ---------------------
 
@@ -262,6 +279,13 @@ local result=1
         _claude_docker_configure_uncomment $_tc_tool "$tmpfile"
         _claude_docker_configure_sub $_tc_tool on "$tmpfile"
     done
+
+    # Written only when it differs from the template's default, so the generated
+    # file stays a record of what was actually chosen.
+    if (( tool_enabled[k8s] )) && [[ $helm_major != 3 ]]; then
+        _claude_docker_configure_uncomment helm "$tmpfile"
+        _claude_docker_configure_sub helm "$helm_major" "$tmpfile"
+    fi
 
     local header
     header="$(

@@ -279,6 +279,66 @@ check "build/playwright: the aws option does NOT add --build-arg INCLUDE_AWS" $?
 
 zstyle -d ':omz:plugins:tupperclaude' aws
 
+# --- the helm major: a value, not a flag --------------------------------------
+#
+# helm is deliberately outside $_tupperclaude_tools, so it needs its own
+# coverage: the build arg rides with the k8s layer that reads it, the label
+# tracks the value, and an unrecognised value is refused BEFORE a fifteen-minute
+# build rather than by the Dockerfile at the end of one.
+
+# Off by default, and the build arg is meaningless without the layer that reads
+# it — passing it anyway earns the unconsumed-build-arg warning.
+reset_docker_log
+command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+_claude_docker_build arm64 base >/dev/null 2>&1
+load_docker_log
+records_matching build HELM_MAJOR
+(( ${#reply} == 0 ))
+check "build: no HELM_MAJOR build-arg when k8s is off" $? "${#reply} record(s)"
+records_matching build
+if (( ${#reply} == 1 )); then
+    argv_has_pair "$reply[1]" --label tupperclaude.helm=3
+    check "build: stamps the default helm major even when k8s is off" $?
+else
+    not_ok "build: one build record to check the helm label on" "${#reply} record(s)"
+fi
+
+zstyle ':omz:plugins:tupperclaude' k8s on
+zstyle ':omz:plugins:tupperclaude' helm both
+reset_docker_log
+command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+_claude_docker_build arm64 base >/dev/null 2>&1
+load_docker_log
+records_matching build HELM_MAJOR=both
+(( ${#reply} == 1 ))
+check "build: the helm option becomes --build-arg HELM_MAJOR" $? "${#reply} record(s)"
+records_matching build
+if (( ${#reply} == 1 )); then
+    argv_has_pair "$reply[1]" --label tupperclaude.helm=both
+    check "build: the helm label tracks the option" $?
+else
+    not_ok "build: one build record to check the helm label on" "${#reply} record(s)"
+fi
+
+# Refused up front. The Dockerfile rejects it too, but only after every layer
+# above the k8s one has already run.
+zstyle ':omz:plugins:tupperclaude' helm 5
+reset_docker_log
+command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+out="$(_claude_docker_build arm64 base 2>&1)"
+rc=$?
+(( rc != 0 ))
+check "build: an unrecognised helm value is refused" $? "rc=$rc"
+[[ $out == *'must be 3, 4 or both'* ]]
+check "build: the helm refusal names the legal values" $? "got: $out"
+load_docker_log
+records_matching build
+(( ${#reply} == 0 ))
+check "build: nothing is built when the helm value is refused" $? "${#reply} record(s)"
+
+zstyle -d ':omz:plugins:tupperclaude' helm
+zstyle -d ':omz:plugins:tupperclaude' k8s
+
 # --- the playwright variant ---
 reset_docker_log
 command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
