@@ -140,9 +140,11 @@ to type it. It regenerates `~/.tupperclaude.zsh` from the template, so any optio
 does not ask about — `docker-sock`, `home`, `dockerfile`, `machine-md` — reverts to its
 default. `docker-sock` is the one worth watching: it defaults to **on**, which is
 equivalent to root on the host. It takes a timestamped backup first, so re-adding a
-dropped line is a copy-paste. Run `claude-docker-doctor` **after** the build, not before: it treats the base
-image for your architecture as a required check, which means on a machine that has not built yet
-it reports a `FAIL` for it and exits non-zero — correct behaviour, but an alarming first
+dropped line is a copy-paste.
+
+Run `claude-docker-doctor` **after** the build, not before: it treats the base image for
+your architecture as a required check, which means on a machine that has not built yet it
+reports a `FAIL` for it and exits non-zero — correct behaviour, but an alarming first
 command.
 
 The first build takes roughly 15 minutes, wants about 12 GB free to start, and produces a

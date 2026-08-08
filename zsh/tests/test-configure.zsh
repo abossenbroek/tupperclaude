@@ -383,6 +383,23 @@ check "wizard: appends the source line to an existing ~/.zshrc, preserving it" $
 [[ $after == *'export FOO=bar'* ]]
 check "wizard: the user's existing ~/.zshrc content is untouched" $? "after: $after"
 
+# With $ZDOTDIR set, that is the zshrc zsh reads. The wizard used to hardcode
+# $HOME/.zshrc, so it checked a file zsh never reads: it missed a source line
+# already present and appended a duplicate somewhere harmless and invisible.
+(( wiz_n++ ))
+wizhome="$TC_TEST_WORKDIR/wizhome-$wiz_n"
+command mkdir -p "$wizhome/zdot"
+print -r -- '{}' >"$wizhome/.claude.json"
+print -r -l -- '# the real one' >"$wizhome/zdot/.zshrc"
+print -r -l -- '# the decoy'    >"$wizhome/.zshrc"
+ZDOTDIR="$wizhome/zdot" pty_wizard "$wizhome" $'1\n3\nn\nY' >/dev/null
+command grep -q 'source ~/.tupperclaude.zsh' "$wizhome/zdot/.zshrc"
+check "wizard: appends to \$ZDOTDIR/.zshrc when ZDOTDIR is set" $? \
+    "got: $(<"$wizhome/zdot/.zshrc")"
+! command grep -q 'source ~/.tupperclaude.zsh' "$wizhome/.zshrc"
+check "wizard: and leaves the \$HOME/.zshrc zsh never reads alone" $? \
+    "got: $(<"$wizhome/.zshrc")"
+
 # ============================================================================
 # re-running backs up the previous config
 # ============================================================================

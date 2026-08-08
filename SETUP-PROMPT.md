@@ -93,9 +93,14 @@ Then back it up, before any edit:
 
   test -f <zshrc> && cp <zshrc> <zshrc>.tupperclaude-bak-$(date +%Y%m%d%H%M%S)
 
+Quote every path you substitute for <zshrc> below — my home directory may contain a
+space.
+
 Show me the backup path. If <zshrc> does not exist yet, say so — you will create it in
-STEP 3. If it is a symlink into a dotfiles repo, tell me before you append: the edit
-lands in that repo, not just on this machine.
+STEP 3. If it is a symlink into a dotfiles repo, tell me before you change it at all:
+the edit lands in that repo, not just on this machine. Edit it IN PLACE — appending, or
+rewriting the same file. Do not write a new file and rename it over the path: that
+replaces the symlink with a regular file and quietly detaches it from the repo.
 
 Then look at that file and my home directory and tell me which of these I use:
 
@@ -132,7 +137,9 @@ leave it alone, or run `git -C <that directory> pull --ff-only`, and tell me whi
       git clone https://github.com/abossenbroek/tupperclaude <that>/plugins/tupperclaude
     then add tupperclaude to the existing plugins=(...) line in <zshrc> — unless
     it is already in that array, in which case change nothing.
-    Edit that line in place — do not add a second plugins=() line, and do not
+    Edit that line in place — this is the one branch that rewrites rather than
+    appends, so if <zshrc> is a symlink, take care to modify the file itself and
+    not replace it. Do not add a second plugins=() line, and do not
     reformat the array. The array often spans several lines; insert the word
     inside the existing parentheses without reflowing them. If you cannot see one
     unambiguous plugins=( ... ) block, stop and show me the lines instead of
@@ -232,9 +239,11 @@ ALWAYS write the network line, with whichever value I chose — `tailscale` or
 `tailscale`, so omitting it gives me the sidecar I just declined, plus an authkey
 failure nobody expected.
 
-The leave-it-out rule applies only to the yes/no options — aws, gcloud, k8s — to helm,
-which belongs in the file only if I chose Kubernetes, and to docker-sock, which belongs
-there only if I asked for it off.
+The leave-it-out rule applies to op-ref, which belongs in the file only if I chose the
+1Password option — if I export TS_AUTHKEY myself, leave the line out entirely rather
+than writing a placeholder; to the yes/no options aws, gcloud and k8s; to helm, which
+belongs there only if I chose Kubernetes; and to docker-sock, only if I asked for it
+off.
 
 Then make sure <zshrc> sources it. First check whether it already does:
 
@@ -299,8 +308,11 @@ Run all four and show me a pass/fail for each:
      the ones we agreed in STEP 5 were expected. Those three do not go away after
      a build: authkey if I export TS_AUTHKEY in my own shell, ssh-agent if my
      engine is not Docker Desktop, op-signin while 1Password is locked.
-     If none of those apply to me, then this must exit 0 and end with the line:
+     If none of those apply to me, then this must exit 0 and its output must
+     contain the line:
        All required checks passed.
+     Match on that line, not on the whole output — themes print their own chatter
+     into `zsh -i -c`, the same reason check 2 below uses a sentinel word.
      Rows marked "info" are fine either way — the Playwright images and the images
      for the other CPU architecture are optional, not missing.
 
