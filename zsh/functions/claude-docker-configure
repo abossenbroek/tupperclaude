@@ -40,7 +40,7 @@ for arg in "$@"; do
             print -r -- 'Checks your prerequisites, asks how you want the sandbox to reach the'
             print -r -- 'network and which optional toolchains to build into the image, then'
             print -r -- 'writes the answers to ~/.tupperclaude.zsh and offers to source it from'
-            print -r -- '~/.zshrc.'
+            print -r -- 'your .zshrc (under $ZDOTDIR when that is set).'
             print -r -- ''
             print -r -- 'Needs an interactive terminal. To configure without it, set the zstyle'
             print -r -- 'options by hand — see zsh/templates/tupperclaude.zsh for the full list.'
