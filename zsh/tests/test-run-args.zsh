@@ -573,10 +573,13 @@ check "MACHINE.md: a run with different tool options refreshes the file" $? \
 check "MACHINE.md: the toolchain list follows the options" $? \
     "kubectl must appear only in the k8s-on body"
 
-# gcloud is optional now, so the credentials sentence must stop claiming it
-# unconditionally — it named gcloud even on an image built without it.
-[[ $mmd_off != *gcloud* ]]
-check "MACHINE.md: an off tool is not named in the body" $? \
+# The tools sentence must not claim a binary the image lacks. The credentials
+# sentence is a different list on purpose: ~/.aws and ~/.config/gcloud are copied
+# in whatever the build options say, so it names them either way.
+[[ $mmd_off != *', gcloud'* ]]
+check "MACHINE.md: an off tool is not listed among the tools" $? "got: $mmd_off"
+[[ $mmd_off == *'Google Cloud'* ]]
+check "MACHINE.md: but its credentials are still declared, because they are mounted" $? \
     "got: $mmd_off"
 
 zstyle -d ':omz:plugins:tupperclaude' k8s

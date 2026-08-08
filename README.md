@@ -172,8 +172,11 @@ You land in a `tmux` session with:
 | Window | Purpose |
 | --- | --- |
 | `claude` | Claude Code itself |
-| `adc` | A shell with the `gcloud` ADC login command **pre-typed but not executed** — one Enter away when a token expires |
-| `net` | *(tailscale network mode only)* A tailnet liveness probe; a silent disconnect rings the terminal bell instead of surfacing as mystery tool failures |
+| `aws` | *(`aws` on only)* A shell with `aws sso login` **pre-typed but not executed** — one Enter away when a session expires |
+| `gcloud` | *(`gcloud` on only)* The same, with the `gcloud` login and ADC commands pre-typed |
+| `k9s` | *(`k8s` on only)* `k9s`, running against whichever context the kubeconfig defaults to |
+| `tailscale` | *(tailscale network mode only)* A tailnet liveness probe; a silent disconnect rings the terminal bell instead of surfacing as mystery tool failures |
+| `zsh` | A plain shell |
 
 On first run in a directory, a `MACHINE.md` is written **into your working directory**
 describing the environment to Claude — image, architecture, variant, network mode,
@@ -185,11 +188,13 @@ echo 'MACHINE.md' >> .gitignore
 ```
 
 It is **refreshed, not just created.** The first line is a marker recording which image,
-variant and network mode wrote the file; when any of those differs the file is rewritten.
-That is deliberate: without it, switching a directory from the base variant to the
-Playwright one would leave a stale `MACHINE.md` telling Claude it has no browser. The
-cost is that **your own edits to a tupperclaude-written `MACHINE.md` are lost** the next
-time you switch variant, arch or network mode.
+variant, network mode and optional toolchains wrote the file; when any of those differs
+the file is rewritten. That is deliberate: without it, switching a directory from the
+base variant to the Playwright one would leave a stale `MACHINE.md` telling Claude it has
+no browser — and the toolchains are in the marker for the same reason, since the body
+lists them. The cost is that **your own edits to a tupperclaude-written `MACHINE.md` are
+lost** the next time you switch variant, arch or network mode, or toggle one of the
+optional toolchains.
 
 Ownership is decided by that marker line alone: a `MACHINE.md` containing no
 `<!-- tupperclaude: … -->` line is somebody's own document and is never touched, however
@@ -197,11 +202,11 @@ much it may talk about tupperclaude. Set [`machine-md`](#machine-md) to `off` to
 writing the file at all.
 
 Run `versions` inside the container for the full toolchain list with version numbers.
-Toolchain: claude, gh, gcloud, tailscale (CLI only), docker (host socket), git,
+Toolchain: claude, gh, tailscale (CLI only), docker (host socket), git,
 node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo/rustfmt/clippy/rust-analyzer,
 deno, linear-cli, pulumi, mise, psql, mysql, tmux, ripgrep, jq, yq, clang/clangd/cmake,
 pyright, typescript-language-server, svelte-language-server/svelte-check, and optionally
-aws.
+aws, gcloud, and the Kubernetes tools (kubectl, helm, k9s).
 
 ## Differences from stock Claude Code
 

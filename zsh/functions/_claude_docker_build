@@ -372,7 +372,7 @@ if ! command docker run --rm --platform "$_tc_platform" "$_tc_image" \
         bash -n /usr/local/bin/start.sh >/dev/null 2>&1
 then
     _claude_docker_err "$_tc_image built, but /usr/local/bin/start.sh does not parse — every container will fail to start" \
-        "docker run --rm $_tc_image bash -n /usr/local/bin/start.sh   # to see the error"
+        "docker run --rm --platform $_tc_platform $_tc_image bash -n /usr/local/bin/start.sh   # to see the error"
     return 1
 fi
 
