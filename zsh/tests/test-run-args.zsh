@@ -284,6 +284,81 @@ for tool in $_tupperclaude_tools; do
     unset FAKE_DOCKER_IMAGE_LABELS
 done
 
+# --- the helm major is checked too, and it matters more -----------------------
+#
+# helm carries a value rather than a flag, so it is deliberately NOT in
+# $_tupperclaude_tools and the loop above cannot cover it. It needs the check
+# more than they do: a missing binary announces itself with `command not found`,
+# whereas the wrong helm major runs and renders a chart against a live cluster.
+
+_claude_docker_ctx arm64 base || exit 1
+zstyle ':omz:plugins:tupperclaude' k8s on
+
+export FAKE_DOCKER_IMAGE_LABELS="$_tc_image=tupperclaude.helm=3"
+zstyle ':omz:plugins:tupperclaude' helm 4
+local helm_out
+helm_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+check "helm mismatch: the run still succeeds — this is a warning, not a refusal" $?
+[[ $helm_out == *'helm option is 4'*'built with helm=3'* ]]
+check "helm mismatch: the warning states both the option and the label" $? "got: $helm_out"
+
+# Agreement is silence.
+zstyle ':omz:plugins:tupperclaude' helm 3
+helm_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+[[ $helm_out != *'helm option'* ]]
+check "helm match: no warning when the image agrees with the option" $? "got: $helm_out"
+
+# With k8s off there is no helm in the image, so the option has nothing to be
+# wrong about and must not produce noise.
+zstyle ':omz:plugins:tupperclaude' k8s off
+zstyle ':omz:plugins:tupperclaude' helm 4
+helm_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+[[ $helm_out != *'helm option'* ]]
+check "helm: no warning when k8s is off — there is no helm to disagree about" $? "got: $helm_out"
+
+zstyle -d ':omz:plugins:tupperclaude' helm
+zstyle -d ':omz:plugins:tupperclaude' k8s
+unset FAKE_DOCKER_IMAGE_LABELS
+
+# --- the kubeconfig is mounted, as one file, only when k8s is on --------------
+#
+# The rest of ~/.kube is a discovery cache keyed by API-server IP and a cached
+# GKE token; mounting the directory would hand both to the sandbox. $HOME here
+# is the harness's throwaway mktemp -d, so the file has to be created or this
+# asserts on nothing and passes green.
+
+command mkdir -p "$HOME/.kube"
+print -r -- 'apiVersion: v1' >"$HOME/.kube/config"
+
+# `records_matching run` alone would also match the Tailscale sidecar's own
+# `docker run`, which carries none of these mounts — the sandbox is the one
+# started with -it --rm.
+zstyle ':omz:plugins:tupperclaude' k8s off
+reset_docker_log
+_claude_docker_run arm64 base >/dev/null 2>&1
+load_docker_log
+records_matching run -it --rm
+[[ $reply[1] != *host-kube* ]]
+check "kubeconfig: not mounted when k8s is off" $? "got: $reply[1]"
+
+zstyle ':omz:plugins:tupperclaude' k8s on
+reset_docker_log
+_claude_docker_run arm64 base >/dev/null 2>&1
+load_docker_log
+records_matching run -it --rm
+argv_has_pair "$reply[1]" -v "$HOME/.kube/config:/run/host-kube/config:ro"
+check "kubeconfig: mounted read-only, as the single file, when k8s is on" $?
+# The directory must not travel with it — that is the whole point.
+[[ $reply[1] != *"$HOME/.kube:/run/host-kube"* ]]
+check "kubeconfig: the ~/.kube directory itself is never mounted" $? "got: $reply[1]"
+
+# A multi-path KUBECONFIG is kubectl's to merge, not ours to guess at.
+KUBECONFIG="/one/path:/another" _claude_docker_run arm64 base 2>&1 1>/dev/null | command grep -q 'several files'
+check "kubeconfig: a multi-path KUBECONFIG falls back and says so" $?
+
+zstyle -d ':omz:plugins:tupperclaude' k8s
+command rm -rf "$HOME/.kube"
+
 # --- docker-sock, and the gid that travels with it ----------------------------
 #
 # This option decides whether the sandbox is a security boundary at all: the

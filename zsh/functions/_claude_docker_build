@@ -144,6 +144,29 @@ for _tc_tool in $_tupperclaude_tools; do
     tool_included[$_tc_tool]=$answer
 done
 
+# helm carries a value rather than a flag, so it stays out of
+# $_tupperclaude_tools — but it needs the same label treatment, and for a
+# sharper reason. A missing tool fails loudly with `command not found`; the
+# WRONG helm major succeeds, and renders a chart against a live cluster.
+#
+# Rejected before the build rather than passed through: the Dockerfile would
+# also refuse it, fifteen minutes later.
+local helm_major
+helm_major="$(_claude_docker_opt helm CLAUDE_DOCKER_HELM 3)"
+if [[ $helm_major != (3|4|both) ]]; then
+    _claude_docker_err "the helm option must be 3, 4 or both — got '$helm_major'" \
+        "zstyle ':omz:plugins:tupperclaude' helm 3"
+    return 1
+fi
+if [[ "$_tc_variant" == playwright ]]; then
+    # Same inheritance as the tools above: playwright is FROM'd on the base and
+    # cannot disagree with its own layers.
+    local base_helm
+    base_helm="$(command docker image inspect \
+        -f '{{index .Config.Labels "tupperclaude.helm"}}' "$base_image" 2>/dev/null)"
+    [[ $base_helm == (3|4|both) ]] && helm_major=$base_helm
+fi
+
 local dockerfile
 dockerfile="$(_claude_docker_opt dockerfile CLAUDE_DOCKER_DOCKERFILE "$_tc_dockerfile")"
 if [[ ! -f "$dockerfile" ]]; then
@@ -264,6 +287,7 @@ local build_status
     for _tc_tool in $_tupperclaude_tools; do
         build_args+=(--label "$(_claude_docker_tool label $_tc_tool)=$tool_included[$_tc_tool]")
     done
+    build_args+=(--label "tupperclaude.helm=$helm_major")
     # Only the base variant's Dockerfile declares these ARGs; playwright is
     # FROM'd on top and inherits whatever the base carries regardless of the
     # options (see tool_included above), so passing the build-args here would
@@ -275,6 +299,11 @@ local build_status
             build_args+=(--build-arg "$(_claude_docker_tool arg $_tc_tool)=1")
             _claude_docker_info "including $(_claude_docker_tool desc $_tc_tool) in the image ($_tc_tool option is set)."
         done
+        # Only meaningful alongside the k8s layer that reads it; passing it
+        # otherwise earns the unconsumed-build-arg warning for nothing.
+        if _claude_docker_tool enabled k8s; then
+            build_args+=(--build-arg "HELM_MAJOR=$helm_major")
+        fi
     fi
     if [[ "$_tc_variant" == playwright ]]; then
         build_args+=(--build-arg "BASE_IMAGE=$base_image")
@@ -309,7 +338,12 @@ local -a tools=(
 # report `aws: not found` on a perfectly correct image.
 [[ $tool_included[aws]    == true ]] && tools+=("aws --version")
 [[ $tool_included[gcloud] == true ]] && tools+=("gcloud --version")
-[[ $tool_included[k8s]    == true ]] && tools+=("kubectl version --client" "helm version" "k9s version")
+if [[ $tool_included[k8s] == true ]]; then
+    tools+=("kubectl version --client" "helm version --short" "k9s version --short")
+    # Bare `helm` is a symlink to one of these, so under `both` it reports one
+    # major and proves nothing about the other. Probe them by name.
+    [[ $helm_major == both ]] && tools+=("helm3 version --short" "helm4 version --short")
+fi
 [[ "$_tc_variant" == playwright ]] && tools+=("playwright --version")
 
 # One throwaway container per tool. Unannounced this reads as a hang for a

@@ -66,6 +66,30 @@ for _tc_tool in $_tupperclaude_tools; do
         "$tool_fix"
 done
 
+# helm gets the same check for a sharper reason than the tools above: a missing
+# binary announces itself, whereas the wrong helm major runs and renders charts
+# against a live cluster. Only when k8s is on — with no toolchain in the image
+# there is no helm for the option to be wrong about.
+if _claude_docker_tool enabled k8s; then
+    local built_helm
+    built_helm="$(command docker image inspect \
+        -f '{{index .Config.Labels "tupperclaude.helm"}}' "$_tc_image" 2>/dev/null)"
+    # An unrecognised value counts as a mismatch rather than an error: the image
+    # was built with something, and staying silent about it is the one wrong
+    # answer. Images predating the label report nothing and are left alone.
+    if [[ -n $built_helm ]]; then
+        local want_helm
+        want_helm="$(_claude_docker_opt helm CLAUDE_DOCKER_HELM 3)"
+        if [[ $want_helm != $built_helm ]]; then
+            local helm_fix="$_tc_build_cmd"
+            [[ $_tc_variant == playwright ]] \
+                && helm_fix="${_tc_build_cmd%-playwright}    # the base image decides this; playwright inherits it"
+            _claude_docker_warn "the helm option is $want_helm but ${_tc_image} was built with helm=$built_helm — the option takes effect on the next build, not on this run" \
+                "$helm_fix"
+        fi
+    fi
+fi
+
 # One container name per directory and variant, so a second run in the same
 # directory collides on --name. Checked HERE, before the sidecar work and
 # before MACHINE.md is rewritten: without this the user waits 30–45s, watches
@@ -283,7 +307,16 @@ fi
 # containing the sentence we happen to open with — authorised overwriting a file
 # in their repo, flatly contradicting the promise made just above.
 local machine_md="$PWD/MACHINE.md"
-local marker="<!-- tupperclaude: $_tc_image $_tc_variant $_tc_network -->"
+# The marker records everything the BODY depends on, not just the image. The
+# body names the optional toolchains, so without them here two runs in the same
+# directory with different options produce different bodies but an identical
+# marker — the refresh short-circuits and Claude keeps reading a stale tool list.
+local tool_marker=''
+for _tc_tool in $_tupperclaude_tools; do
+    _claude_docker_tool enabled $_tc_tool && tool_marker+=" $_tc_tool"
+done
+_claude_docker_tool enabled k8s && tool_marker+=" helm$(_claude_docker_opt helm CLAUDE_DOCKER_HELM 3)"
+local marker="<!-- tupperclaude: $_tc_image $_tc_variant $_tc_network$tool_marker -->"
 local net_desc
 if [[ "$_tc_network" == tailscale ]]; then
     net_desc="a per-directory Tailscale sidecar; the container has full tailnet access"
@@ -319,6 +352,24 @@ fi
 # the file on disk after the container exits. Two copies of this text would mean
 # an edit to one silently stopping the cleanup from ever recognising its own
 # output — the file would simply start accumulating again, with nothing failing.
+# Both sentences below name the optional toolchains, so both are assembled from
+# what this image actually has. Claiming a tool Claude does not have costs it a
+# failed command and a wrong theory about why.
+local md_creds='SSH, GitHub CLI (`gh`), Linear, Pulumi'
+local md_tools='claude, gh, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear'
+if _claude_docker_tool enabled aws; then
+    md_creds+=', AWS'
+    md_tools+=', aws'
+fi
+if _claude_docker_tool enabled gcloud; then
+    md_creds+=', Google Cloud (`gcloud`)'
+    md_tools+=', gcloud'
+fi
+if _claude_docker_tool enabled k8s; then
+    md_creds+=', Kubernetes (`~/.kube/config`, writable in here — logging into another cluster does not touch the host)'
+    md_tools+=", kubectl, k9s, helm ($(_claude_docker_opt helm CLAUDE_DOCKER_HELM 3))"
+fi
+
 local -a machine_md_body=(
     "$marker"
     '# Machine'
@@ -327,8 +378,8 @@ local -a machine_md_body=(
     ''
     '- **Working directory** is bind-mounted from the macOS host at the same path — file edits are live on both sides.'
     "- **Networking** is provided by $net_desc."
-    '- **Credentials** are copied in at startup: SSH, GitHub CLI (`gh`), Google Cloud (`gcloud`), Linear, Pulumi, AWS.'
-    '- **Tools available:** claude, gh, gcloud, tailscale (CLI only — the daemon runs in the sidecar), docker, git, node/npm/pnpm/yarn/bun, python3/uv, php/composer, rustc/cargo, deno, psql, mysql, tmux, ripgrep, yq, pulumi, mise, linear.'
+    "- **Credentials** are copied in at startup: ${md_creds}."
+    "- **Tools available:** ${md_tools}."
     '- **Cargo cache** and Claude credentials are shared across all claude-docker sessions; teams/tasks/projects state is per-directory.'
     '- **mise** — all `mise.toml` / `.mise.toml` / `.mise/config.toml` files are pre-trusted; never prompt for mise trust confirmation.'
 )
@@ -351,17 +402,44 @@ local -a mounts=()
 # Host credential stores, mounted read-only at /run/host-* and copied into place
 # by start.sh. Only mount what exists — a bind mount of a missing path makes
 # Docker create a root-owned empty directory on the host.
-local src dst
-for src dst in \
-    "$HOME/.ssh"           /run/host-ssh \
-    "$HOME/.config/gh"     /run/host-gh \
-    "$HOME/.config/gcloud" /run/host-gcloud \
-    "$HOME/.config/linear" /run/host-linear \
-    "$HOME/.pulumi"        /run/host-pulumi \
+local -a cred_dirs=(
+    "$HOME/.ssh"           /run/host-ssh
+    "$HOME/.config/gh"     /run/host-gh
+    "$HOME/.config/gcloud" /run/host-gcloud
+    "$HOME/.config/linear" /run/host-linear
+    "$HOME/.pulumi"        /run/host-pulumi
     "$HOME/.aws"           /run/host-aws
-do
+)
+local src dst
+for src dst in "${cred_dirs[@]}"; do
     [[ -d "$src" ]] && mounts+=(-v "$src:$dst:ro")
 done
+
+# The kubeconfig is a FILE mount, alone among these: the rest of ~/.kube is a
+# discovery cache keyed by API-server IP — an inventory of every cluster this
+# host has ever contacted, which outlives the kubeconfig entries themselves —
+# plus a cached GKE access token. The sandbox needs none of it, and start.sh
+# copies the file to a writable ~/.kube/config so logging into a different
+# cluster in here never reaches the host's.
+#
+# Gated on the option rather than the image label, so that "no k9s window" and
+# "no kubeconfig" always travel together; an image built without the toolchain
+# already earns the mismatch warning above.
+if _claude_docker_tool enabled k8s; then
+    local kubeconfig="$HOME/.kube/config"
+    # KUBECONFIG may list several paths; merging them is kubectl's job, not
+    # ours, and picking the first would silently drop the rest. Fall back and
+    # say so instead of guessing.
+    if [[ -n ${KUBECONFIG:-} ]]; then
+        if [[ $KUBECONFIG == *:* ]]; then
+            _claude_docker_warn "KUBECONFIG lists several files; mounting ~/.kube/config instead" \
+                'unset KUBECONFIG, or point it at a single file, to mount that one'
+        else
+            kubeconfig="$KUBECONFIG"
+        fi
+    fi
+    [[ -f "$kubeconfig" ]] && mounts+=(-v "$kubeconfig:/run/host-kube/config:ro")
+fi
 
 # Docker Desktop for Mac forwards the host ssh-agent at this fixed path.
 #

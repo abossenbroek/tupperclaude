@@ -65,11 +65,36 @@
 # ---------------------------------------------------------------------------
 # k8s — include kubectl, helm and k9s in the built image
 #
-# Also opens a `k9s` tmux window running live against your current context.
+# Also opens a `k9s` tmux window running live against your current context, and
+# mounts ~/.kube/config — that file alone, not the rest of ~/.kube. The copy
+# inside the sandbox is writable, so logging into a different cluster in there
+# leaves your host kubeconfig untouched.
+#
+# GKE clusters additionally need `gcloud` on: the auth plugin mints its tokens
+# from the SDK.
 #
 # Env var: CLAUDE_DOCKER_INCLUDE_K8S
 # ---------------------------------------------------------------------------
 # zstyle ':omz:plugins:tupperclaude' k8s off
+
+# ---------------------------------------------------------------------------
+# helm — which Helm major the k8s option installs
+#
+#   3      Helm 3 (default)
+#   4      Helm 4
+#   both   both, as `helm3` and `helm4`; bare `helm` is Helm 3
+#
+# Only consulted when k8s is on. Both majors are maintained and charts written
+# for 3 do not all render under 4, hence the choice.
+#
+# Under `both` the two share ~/.config/helm, ~/.cache/helm and
+# ~/.local/share/helm: whichever runs first owns repository.yaml, and Helm 4 can
+# rewrite it in a shape Helm 3 will not read. Set HELM_CONFIG_HOME per major if
+# that bites.
+#
+# Env var: CLAUDE_DOCKER_HELM
+# ---------------------------------------------------------------------------
+# zstyle ':omz:plugins:tupperclaude' helm 3
 
 # ---------------------------------------------------------------------------
 # home — host directory holding all tupperclaude state
