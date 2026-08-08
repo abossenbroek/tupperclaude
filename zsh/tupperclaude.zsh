@@ -36,10 +36,11 @@ typeset -ga _tupperclaude_commands=(
     claude-ts-ensure
 )
 
-# The optional toolchains, in the order they appear in the wizard, doctor and
-# the tmux window set. Each one changes what is IN the image, so each carries a
-# build arg and an image label; _claude_docker_tool derives both from the name.
-typeset -ga _tupperclaude_tools=(aws gcloud k8s)
+# $_tupperclaude_tools is deliberately NOT defined here. _claude_docker_tool owns
+# it, because these functions are autoloadable without this shim and the table has
+# to survive that. A copy here would win over the helper's in a normal install and
+# be unreachable in an fpath-only one — two silently different products from one
+# checkout, and no test that compares them.
 
 # No compinit here: it is slow and clobbers the first run's cache. But $fpath
 # alone is not enough under oh-my-zsh, which adds only the plugin ROOT to $fpath,

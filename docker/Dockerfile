@@ -264,11 +264,12 @@ RUN if [ "$INCLUDE_AWS" = "1" ]; then \
 # ── Layer 11 (optional): Google Cloud SDK + GKE auth plugin ──────────────────
 # Off by default; enable with --build-arg INCLUDE_GCLOUD=1.
 #
-# Position matters more than it looks. This used to be layer 4, where the build
-# arg became part of the cache key for every layer below it — so toggling the
-# option re-ran the Rust toolchain, deno, pulumi, uv, tailscale and yq: ~2.3 GB
-# and most of a 15-minute build, every time, forever. Down here it forks only
-# the same tail INCLUDE_AWS already forks.
+# Position matters more than it looks. gcloud used to be installed at layer 4,
+# unconditionally. Had the build arg stayed there it would have become part of
+# the cache key for every layer below it — so toggling the option would re-run
+# the Rust toolchain, deno, pulumi, uv, tailscale and yq: ~2.3 GB and most of a
+# 15-minute build, every time, forever. Down here it forks only the same tail
+# INCLUDE_AWS already forks.
 #
 # That tail is not free: an ARG exports into the environment of every later
 # instruction, so mise and the two npm layers below still rebuild on a toggle.
@@ -465,8 +466,10 @@ RUN printf '%s\n' \
   '    # ~gke-gcloud-auth-plugin. A path with an embedded space matches only from' \
   '    # the last space on, leaving a fragment behind; such a path is broken in' \
   '    # here either way, so that is a cosmetic loss, not a new one.' \
-  '    # Double-quoted because the expression holds [ ] and *: bare, the shell' \
-  '    # would glob it against the mounted repo that is cwd here.' \
+  '    # Double-quoted because the expression contains a literal single quote,' \
+  '    # which cannot appear inside a single-quoted word at all. It also keeps' \
+  '    # the [ ] and * away from the globber, which cwd being the mounted repo' \
+  '    # would otherwise make a live hazard.' \
   "    sed -i \"s#[^[:space:]\\\"']*/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g\" ~/.kube/config || true" \
   'fi' \
   'if [ -d /run/host-linear ]; then' \
