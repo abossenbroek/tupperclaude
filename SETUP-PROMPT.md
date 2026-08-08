@@ -10,7 +10,9 @@ You stay in control the whole way: the agent proposes, you approve.
 **Prefer to do it yourself?** [INSTALL.md](INSTALL.md) has the same steps by hand, and
 `claude-docker-configure` is an interactive wizard that asks most of the same questions
 — it covers networking, the auth key, the optional toolchains and Helm, but not
-`docker-sock`, which the prompt below asks about because it defaults to on.
+`docker-sock`, `home`, `dockerfile` or `machine-md`. The prompt below asks about
+`docker-sock` because it defaults to on, and on means the sandbox is not a security
+boundary.
 
 ---
 
@@ -146,6 +148,7 @@ leave it alone, or run `git -C <that directory> pull --ff-only`, and tell me whi
     guessing. A malformed plugins=() breaks my login shell.
 
   zinit:      add to <zshrc>:  zinit light abossenbroek/tupperclaude
+              Append at the end — it only has to come after zinit's own source line.
   antidote:   add to my antidote plugins file:  abossenbroek/tupperclaude
               Find that file first — it is usually ~/.zsh_plugins.txt, but check what
               my <zshrc> actually references. If my setup is the static kind, where
@@ -177,7 +180,9 @@ Then check it loaded:
 
   zsh -i -c 'claude-docker-status --version'
 
-This must print a version. If the command is not found, stop — the plugin did not load.
+This must print `tupperclaude` followed by a version number. If the command is not
+found, stop — the plugin did not load. If it prints `tupperclaude unknown`, the plugin
+loaded but cannot read its own .version file: tell me, do not carry on.
 
 STEP 4 — Ask me how to configure it
 
@@ -320,15 +325,15 @@ Run all four and show me a pass/fail for each:
      Pass = the output contains COMPLETION-OK. Match on that word rather than on
      the whole line: themes like powerlevel10k print their own chatter into a
      non-interactive `zsh -i -c`, which would swamp an exact-match test.
-     If it is absent, everything else still works — it means my ~/.zshrc never runs
-     compinit. Tell me, do not try to fix my ~/.zshrc for it.
+     If it is absent, everything else still works — it means my <zshrc> never runs
+     compinit. Tell me, do not try to fix <zshrc> for it.
 
   3. zsh -i -c 'claude-docker-status'
      Lists running sandboxes. An empty list is a pass.
 
   4. Ask me to run this one myself, in my own terminal — it takes over the window.
      Tell me to run `exec zsh` first, or open a new terminal: the shell I am sitting
-     in was started before you edited ~/.zshrc, so it does not have these commands
+     in was started before you edited <zshrc>, so it does not have these commands
      yet. (Your own checks above are unaffected — `zsh -i -c` starts a fresh shell
      every time, which is why they worked.)
 
@@ -342,7 +347,7 @@ Run all four and show me a pass/fail for each:
      list at the bottom matches the tools I enabled, and that pressing Ctrl-b then d
      detaches.
 
-Finally, tell me these two things:
+Finally, tell me these three things:
 
   - The first run in a directory writes a MACHINE.md file there describing the sandbox
     to Claude. It is removed again when the sandbox exits, unless it was edited. To
