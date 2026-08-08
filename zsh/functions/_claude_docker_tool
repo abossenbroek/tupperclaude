@@ -1,23 +1,22 @@
 #!/usr/bin/env zsh
-# _claude_docker_tool <enabled|label|arg|env> <tool>
+# _claude_docker_tool <enabled|label|arg|desc> <tool>
 #
 # The optional toolchains in $_tupperclaude_tools each need four names: a zstyle
 # key, an environment variable, a Dockerfile build arg and an image label. All
 # four derive from the tool's own name, so they are computed here rather than
-# written out per tool — three tools spelled out by hand across build, run,
-# doctor, configure and the template is twenty-one places to keep in step.
+# written out per tool — otherwise adding a fourth tool means finding every
+# place across build, run, doctor, configure and the template that spells the
+# other three out by hand.
 #
 #   enabled  returns 0 when the option is on, 1 when off (no output)
 #   label    prints the image label     — tupperclaude.<tool>
 #   arg      prints the build arg name  — INCLUDE_<TOOL>
-#   env      prints the env var name    — CLAUDE_DOCKER_INCLUDE_<TOOL>
 #   desc     prints what the option installs, for messages a user reads
 #
 # A tool whose name is not a valid variable-name fragment would produce a build
 # arg that Docker silently ignores, so names stay [a-z0-9]+.
 
 emulate -L zsh
-setopt local_options noksharrays
 
 local action=$1 tool=$2
 
@@ -25,7 +24,6 @@ case $action in
     enabled) _claude_docker_opt -b "$tool" "CLAUDE_DOCKER_INCLUDE_${(U)tool}" ;;
     label)   print -r -- "tupperclaude.$tool" ;;
     arg)     print -r -- "INCLUDE_${(U)tool}" ;;
-    env)     print -r -- "CLAUDE_DOCKER_INCLUDE_${(U)tool}" ;;
     desc)
         case $tool in
             aws)    print -r -- 'AWS CLI v2' ;;

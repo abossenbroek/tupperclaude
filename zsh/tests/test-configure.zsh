@@ -168,42 +168,55 @@ check "wizard: wrote ~/.tupperclaude.zsh in the throwaway HOME" $? "home: $wizho
 # THE BUG: every answer after the first must survive
 # ============================================================================
 #
-# network=default (question 1), aws=yes (the LAST question). Under the old
-# single-keypress reads, the newline after "2" was consumed by the aws prompt,
-# which then matched no case and took its default of "no" — so a config with
-# aws off here means the bug is back.
+# network=default (question 1), then one question per tool. Under the old
+# single-keypress reads, the newline after "2" was consumed by the next prompt,
+# which then matched no case and took its default of "no" — so an answer going
+# missing below means the bug is back.
+#
+# The guard belongs on the LAST question: that is where a swallowed newline has
+# no later answer to absorb the damage. $_tupperclaude_tools decides which
+# question is last, so the answer stream is derived from the array rather than
+# written out — aws was last when this test was written and is not any more.
+local -a _tool_no=()
+local _t
+for _t in ${_tupperclaude_tools[1,-2]}; do _tool_no+=($'n\n'); done
+local _last_tool=${_tupperclaude_tools[-1]}
 
-run_wizard $'2\ny\n'
+run_wizard $'2\n'"${(j::)_tool_no}"$'y\n'
 [[ $cfg == *"zstyle ':omz:plugins:tupperclaude' network 'default'"* ]]
 check "wizard: the FIRST answer (network=default) is recorded" $? "config: $cfg"
-[[ $cfg == *"zstyle ':omz:plugins:tupperclaude' aws 'on'"* ]]
-check "wizard: the LAST answer (aws=yes) is recorded — not silently discarded" $? \
+[[ $cfg == *"zstyle ':omz:plugins:tupperclaude' $_last_tool 'on'"* ]]
+check "wizard: the LAST answer ($_last_tool=yes) is recorded — not silently discarded" $? \
     "config: $cfg"
 
 # The same shape with the answers swapped, so a config that merely happens to
 # contain both values cannot pass by accident.
-run_wizard $'1\n3\nn\n'
+run_wizard $'1\n3\n'"${(j::)_tool_no}"$'n\n'
 [[ $cfg == *"zstyle ':omz:plugins:tupperclaude' network 'tailscale'"* ]]
 check "wizard: network=tailscale is recorded" $? "config: $cfg"
-[[ $cfg != *"aws 'on'"* ]]
-check "wizard: aws stays off when the last answer is 'n'" $? "config: $cfg"
+[[ $cfg != *"$_last_tool 'on'"* ]]
+check "wizard: $_last_tool stays off when the last answer is 'n'" $? "config: $cfg"
 
 # ============================================================================
-# a full four-answer run, including a free-text answer
+# a full run through every branch, including a free-text answer
 # ============================================================================
 #
-# network=tailscale, auth=1Password, the reference typed as free text, aws=yes.
-# The op-ref is the answer most exposed to a read bug: it is the only one that
-# is not a single character, and it contains slashes and colons.
+# network=tailscale, auth=1Password, the reference typed as free text, then yes
+# to every tool. The op-ref is the answer most exposed to a read bug: it is the
+# only one that is not a single character, and it contains slashes and colons.
+local -a _tool_yes=()
+for _t in $_tupperclaude_tools; do _tool_yes+=($'y\n'); done
 
-run_wizard $'1\n1\nop://Private/Tailscale Key/authkey\ny\n'
+run_wizard $'1\n1\nop://Private/Tailscale Key/authkey\n'"${(j::)_tool_yes}"
 [[ $cfg == *"network 'tailscale'"* ]]
-check "wizard/full: answer 1 (network) recorded" $? "config: $cfg"
+check "wizard/full: the network answer is recorded" $? "config: $cfg"
 [[ $cfg == *"op-ref 'op://Private/Tailscale Key/authkey'"* ]]
-check "wizard/full: answer 3 (a free-text 1Password reference) recorded verbatim" $? \
+check "wizard/full: a free-text 1Password reference is recorded verbatim" $? \
     "config: $cfg"
-[[ $cfg == *"aws 'on'"* ]]
-check "wizard/full: answer 4 (aws) recorded" $? "config: $cfg"
+for _t in $_tupperclaude_tools; do
+    [[ $cfg == *"$_t 'on'"* ]]
+    check "wizard/full: the $_t answer is recorded" $? "config: $cfg"
+done
 
 # The generated file must be valid zsh and must actually take effect when
 # sourced — a config that parses but sets nothing is the same failure wearing a
@@ -471,6 +484,15 @@ for tool in $_tupperclaude_tools; do
 done
 [[ $cfg == *"zstyle ':omz:plugins:tupperclaude' helm 'both'"* ]]
 check "wizard: the helm answer that follows k8s=yes is recorded" $? "config: $cfg"
+
+# The build refuses an unrecognised helm value, so the wizard must not manufacture
+# one out of a plausible answer. "Both" and "4 " are what people actually type.
+run_wizard "2"$'\n'"$answers"$'Both\n'
+[[ $cfg == *"zstyle ':omz:plugins:tupperclaude' helm 'both'"* ]]
+check "wizard: a capitalised helm answer is taken, not silently defaulted" $? "config: $cfg"
+run_wizard "2"$'\n'"$answers"$'4 \n'
+[[ $cfg == *"zstyle ':omz:plugins:tupperclaude' helm '4'"* ]]
+check "wizard: a helm answer with trailing space is taken" $? "config: $cfg"
 
 # And answering no to all of them leaves every one out, so a template stanza
 # uncommented unconditionally cannot pass the check above. No helm answer here:

@@ -266,9 +266,14 @@ RUN if [ "$INCLUDE_AWS" = "1" ]; then \
 #
 # Position matters more than it looks. This used to be layer 4, where the build
 # arg became part of the cache key for every layer below it — so toggling the
-# option re-ran the Rust toolchain, deno, pulumi and three npm rounds: ~3.2 GB
+# option re-ran the Rust toolchain, deno, pulumi, uv, tailscale and yq: ~2.3 GB
 # and most of a 15-minute build, every time, forever. Down here it forks only
-# the same short tail INCLUDE_AWS already forks.
+# the same tail INCLUDE_AWS already forks.
+#
+# That tail is not free: an ARG exports into the environment of every later
+# instruction, so mise and the two npm layers below still rebuild on a toggle.
+# Hoisting them above this block would fix that, but they run as USER agent and
+# moving them means shuffling the USER switches — worth doing, not done here.
 #
 # With the option off, /etc/apt/sources.list.d/google-cloud-sdk.list is never
 # written either, so a default image carries no third-party apt repo that an
@@ -455,7 +460,9 @@ RUN printf '%s\n' \
   '    # kubeconfig with no such stanza is normal, a failed copy is not.' \
   '    # The character class is path characters only, so a YAML-quoted value' \
   '    # keeps its quotes; [^ ]* would swallow the opening one and strip it.' \
-  '    sed -i s#[A-Za-z0-9_./-]*/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g ~/.kube/config || true' \
+  '    # Double-quoted because the expression holds [ ] and *: bare, the shell' \
+  '    # would glob it against the mounted repo that is cwd here.' \
+  '    sed -i "s#[A-Za-z0-9_./-]*/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g" ~/.kube/config || true' \
   'fi' \
   'if [ -d /run/host-linear ]; then' \
   '    mkdir -p ~/.config/linear' \
@@ -482,7 +489,7 @@ RUN printf '%s\n' \
 
 USER agent
 
-# ── Layer 11: mise (runtime version manager — must not shadow system node) ───
+# ── Layer 13: mise (runtime version manager — must not shadow system node) ───
 # Installed from the release binary + published SHASUMS256.txt entry rather than
 # `curl mise.run | sh`, so it is verified like everything else.
 ARG MISE_VERSION=v2026.5.18
@@ -500,7 +507,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     chmod +x "$HOME/.local/bin/mise" && \
     echo 'eval "$($HOME/.local/bin/mise activate bash)"' >> ~/.bashrc
 
-# ── Layer 12: npm-based LSP servers + SvelteKit stack ────────────────────────
+# ── Layer 14: npm-based LSP servers + SvelteKit stack ────────────────────────
 # pyright / typescript-language-server back the pyright-lsp / typescript-lsp
 # plugins. For SvelteKit we add the Svelte language server + svelte-check
 # (.svelte type-checking/diagnostics) — there is no official svelte-lsp plugin,
@@ -524,7 +531,7 @@ RUN npm install -g --ignore-scripts \
 # --ignore-scripts; pinned exact instead.
 RUN npm install -g bun@1.3.14
 
-# ── Layer 13 (per-build cache-bust): update claude-code ──────────────────────
+# ── Layer 15 (per-build cache-bust): update claude-code ──────────────────────
 # The base image installs Claude Code natively (~/.local/bin via install.sh).
 # Re-run the same native installer to pull the latest build, rather than adding a
 # second copy via `npm install -g` (which `/doctor` flags as a leftover/duplicate
@@ -546,7 +553,7 @@ RUN npm install -g bun@1.3.14
 ARG BUILD_DATE=unknown
 RUN echo "Build date: $BUILD_DATE" && curl -fsSL https://claude.ai/install.sh | bash -s latest
 
-# ── Layer 14: baked non-secret config ────────────────────────────────────────
+# ── Layer 16: baked non-secret config ────────────────────────────────────────
 # claude.json      = ~/.claude.json  (account prefs, non-secret)
 # claude-settings/ = whitelist of ~/.claude/ (skills, plugins, commands,
 #                    CLAUDE.md, settings.json)

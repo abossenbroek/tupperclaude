@@ -250,19 +250,19 @@ local -a launch=(
 # prompt before any send-keys arrives, or the pre-typed line renders twice.
 local -a pretyped=()
 
-if _claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS; then
+if _claude_docker_tool enabled aws; then
     launch+=('tmux new-window -t main: -n aws')
     # --no-browser: there is no browser in the container to open, and without
     # the flag the CLI waits on one before falling back to printing the URL.
     pretyped+=("tmux send-keys -t main:aws 'aws sso login --no-browser'")
 fi
 
-if _claude_docker_opt -b gcloud CLAUDE_DOCKER_INCLUDE_GCLOUD; then
+if _claude_docker_tool enabled gcloud; then
     launch+=('tmux new-window -t main: -n gcloud')
     pretyped+=("tmux send-keys -t main:gcloud 'gcloud auth login --update-adc --no-launch-browser && gcloud auth application-default login --no-launch-browser'")
 fi
 
-if _claude_docker_opt -b k8s CLAUDE_DOCKER_INCLUDE_K8S; then
+if _claude_docker_tool enabled k8s; then
     # Wrapped, because a tmux window dies with its command: with no reachable
     # cluster k9s exits at once, the window vanishes, and the option looks like
     # it never installed. The wrapper keeps the error on screen and leaves a
@@ -434,6 +434,12 @@ if _claude_docker_tool enabled k8s; then
         if [[ $KUBECONFIG == *:* ]]; then
             _claude_docker_warn "KUBECONFIG lists several files; mounting ~/.kube/config instead" \
                 'unset KUBECONFIG, or point it at a single file, to mount that one'
+        elif [[ $KUBECONFIG != /* ]]; then
+            # A relative path would still pass the -f test below, then reach
+            # docker as `-v ./kubeconfig:...`, which it rejects with a message
+            # about neither an absolute path nor a valid volume name.
+            _claude_docker_warn "KUBECONFIG is a relative path; mounting ~/.kube/config instead" \
+                "point KUBECONFIG at an absolute path to mount that one: ${KUBECONFIG:a}"
         else
             kubeconfig="$KUBECONFIG"
         fi
