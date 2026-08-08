@@ -157,6 +157,9 @@ It also runs in CI on every push and pull request. Run it before and after any p
    - **oh-my-zsh:** delete `tupperclaude` from `plugins=(...)` in `~/.zshrc`, then
      `rm -rf ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/tupperclaude`
    - **zinit:** `zinit delete abossenbroek/tupperclaude`
+   - **antidote:** remove the `abossenbroek/tupperclaude` line from your plugins file,
+     then regenerate the bundle if your setup uses a static one
+   - **sheldon:** `sheldon remove tupperclaude`
    - **antigen / zplug:** remove the `bundle`/`zplug` line and remove the cached clone
      per your manager's own cache-clear command
    - **manual:** remove the `source` line from `~/.zshrc` and `rm -rf ~/.tupperclaude`
