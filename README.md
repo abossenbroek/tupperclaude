@@ -387,7 +387,8 @@ Be precise about what that buys you. It removes the socket, and with it the abil
 of anything in the container to start a privileged container on your host. It does
 **not** make the sandbox safe to point at untrusted code: the container still holds
 your forwarded SSH agent and copies of `~/.ssh`, `~/.config/gh`, `~/.config/gcloud`,
-`~/.aws`, `~/.pulumi` and `~/.config/linear`, still receives whichever API keys you
+`~/.aws`, `~/.pulumi`, `~/.config/linear` and — with `k8s` on — `~/.kube/config`,
+still receives whichever API keys you
 have exported, and still has read-write access to `$PWD` and `~/.claude/worktrees`.
 The threat it stops is *escape to the host*, not *access to your credentials*.
 
@@ -538,14 +539,30 @@ first run and mounted over `/home/agent/.claude/.credentials.json`. It is the sa
 own login, entirely separate from the host's — see
 [above](#you-sign-in-to-claude-code-again-inside-the-sandbox).
 
-**Host credentials.** Host credential stores (`~/.ssh`, `gh`, `gcloud`, Linear, Pulumi, `~/.aws`)
-are mounted read-only at `/run/host-*` and copied to their real locations at container
+**Host credentials.** Host credential stores (`~/.ssh`, `gh`, `gcloud`, Linear, Pulumi, `~/.aws`,
+and `~/.kube/config` when `k8s` is on) are mounted read-only at `/run/host-*` and copied to
+their real locations at container
 startup, and the container can modify them freely without ever writing to your host
 files. Only paths that actually exist are mounted — a bind mount of a missing path would
 make Docker create a root-owned empty directory on the host; tupperclaude checks
 first. A Pulumi access token is derived from the credentials file when
 `PULUMI_ACCESS_TOKEN` isn't already set, and both the CLI and the Pulumi MCP server
 authenticate.
+
+The kubeconfig is the one **file** mount rather than a directory, and deliberately so: the
+rest of `~/.kube` is a discovery cache keyed by API-server IP — an inventory of every
+cluster the host has ever reached, which outlives the kubeconfig entries naming them — plus
+a cached GKE access token. None of that is any use in the sandbox. What *is* copied is a
+credential store on a par with `~/.aws`: a kubeconfig can carry bearer tokens, client
+certificates and `exec` credential-plugin stanzas that shell out, so anything in the sandbox
+has whatever access your current context has. Only the `gke-gcloud-auth-plugin` path is
+rewritten for the image; another `exec` plugin names a host binary that is not there and
+simply fails to authenticate.
+
+Because the copy inside the container is writable, `gcloud container clusters
+get-credentials <other-cluster>` in the sandbox adds a context your host kubeconfig never
+sees. GKE clusters need `gcloud` on as well as `k8s` — the auth plugin mints its tokens from
+the SDK.
 
 **SSH agent.** Docker Desktop for Mac synthesises the forwarded agent socket at
 `/run/host-services/ssh-auth.sock`, which is mounted into the container to let `git push`
@@ -689,9 +706,9 @@ Five deliberate exceptions, each documented again at its own layer:
    `typescript`, `typescript-language-server`, `pyright`, `svelte-language-server`,
    `svelte-check`, `pnpm`, `yarn` — is pinned *and* installed with `--ignore-scripts`.
 
-Notably, `pulumi`, `rustup`, `deno`, and `mise` are installed from checksum-verified
-release artifacts rather than the vendors' `curl ... | sh` bootstrap scripts, which
-publish no checksum.
+Notably, `pulumi`, `rustup`, `deno`, `mise`, `helm` and `k9s` are installed from
+checksum-verified release artifacts rather than the vendors' `curl ... | sh` bootstrap
+scripts, which publish no checksum.
 
 ### The Tailscale sidecar is not covered by any of the above
 
@@ -754,6 +771,9 @@ published checksum file:
 | mise | `https://github.com/jdx/mise/releases/download/<ver>/SHASUMS256.txt` |
 | uv | `docker manifest inspect ghcr.io/astral-sh/uv:<ver>` for the manifest-list digest |
 | aws-cli | AWS publishes a GPG signature but no checksum file. Download `awscli-exe-linux-<slug>-<ver>.zip`, verify the `.sig` against AWS's published public key if you want the strongest guarantee, then record `shasum -a 256` of the zip. |
+| kubectl | `https://dl.k8s.io/release/<ver>/bin/linux/<arch>/kubectl.sha256` — one file per binary, bare hex with no filename. Kubernetes also publishes cosign `.sig`/`.cert` alongside each artifact if you want the stronger check. |
+| helm | `https://get.helm.sh/helm-<ver>-linux-<arch>.tar.gz.sha256sum`. The GitHub release additionally carries a `.sha256sum.asc` PGP signature over that checksum file; `get.helm.sh` serves the checksum alone. **Two majors are pinned — bump both.** |
+| k9s | `https://github.com/derailed/k9s/releases/download/<ver>/checksums.sha256` — one file covering every artifact, unsigned. |
 
 ## Known limitations
 
