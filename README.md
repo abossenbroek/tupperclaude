@@ -307,6 +307,78 @@ claude-docker-build-arm
 At run time `~/.aws` is mounted read-only and copied into the container, and your
 existing profiles and SSO config work regardless of this option.
 
+### `gcloud`
+
+- **zstyle:** `zstyle ':omz:plugins:tupperclaude' gcloud <on|off>` (boolean, as `aws`)
+- **env var:** `CLAUDE_DOCKER_INCLUDE_GCLOUD`
+- **default:** off
+- **read at:** build time
+
+Includes the Google Cloud SDK and `gke-gcloud-auth-plugin` in the image — about
+790 MB, which is why it is off by default. It used to be installed unconditionally;
+an image built before this option existed still carries it, and the run-time
+mismatch warning will say so until you rebuild.
+
+With the option off, `/etc/apt/sources.list.d/google-cloud-sdk.list` is never
+written either, so the image holds no third-party apt repository that an in-sandbox
+`apt-get install` would silently consult.
+
+At run time `~/.config/gcloud` is mounted read-only and copied in regardless of this
+option.
+
+### `k8s`
+
+- **zstyle:** `zstyle ':omz:plugins:tupperclaude' k8s <on|off>` (boolean, as `aws`)
+- **env var:** `CLAUDE_DOCKER_INCLUDE_K8S`
+- **default:** off
+- **read at:** build time — and at run time, for the kubeconfig mount and the `k9s`
+  window
+
+Includes `kubectl`, `helm` and `k9s`, and adds a `k9s` window to the tmux set.
+
+When it is on, `~/.kube/config` — the single file, never the whole `~/.kube` — is
+mounted read-only and copied to a **writable** copy inside the sandbox. That copy is
+the point of the option: `gcloud container clusters get-credentials <other-cluster>`
+inside the sandbox adds contexts the host file never sees, so the sandbox can work
+against a different cluster from the one your desktop is pointed at.
+
+Only `config` is mounted because the rest of `~/.kube` is a discovery cache keyed by
+API-server IP — an inventory of every cluster the host has ever reached — plus a live
+GKE access token, none of which the sandbox needs.
+
+`KUBECONFIG` is honoured when it names exactly one existing file. A multi-path
+`KUBECONFIG` falls back to `~/.kube/config` with a warning rather than guessing which
+one you meant.
+
+Authenticating to **GKE** needs `gcloud` on as well: the auth plugin mints its tokens
+from application-default credentials.
+
+### `helm`
+
+- **zstyle:** `zstyle ':omz:plugins:tupperclaude' helm <3|4|both>`
+- **env var:** `CLAUDE_DOCKER_HELM`
+- **default:** `3`
+- **read at:** build time — and at run time, for the mismatch warning
+
+Which Helm major to install. Only consulted when `k8s` is on. Anything other than
+`3`, `4` or `both` is refused before the build starts, rather than by the Dockerfile
+at the end of one.
+
+It carries an image label of its own, unlike the boolean options, because its
+failure mode is quieter: a *missing* binary fails with `command not found`, but the
+*wrong* Helm major succeeds — and renders your charts against a live cluster.
+
+```zsh
+zstyle ':omz:plugins:tupperclaude' k8s on
+zstyle ':omz:plugins:tupperclaude' helm both
+```
+
+Under `both`, `helm3` and `helm4` are installed side by side and bare `helm` is a
+symlink to `helm3`, the conservative default. The two **share** `~/.config/helm`,
+`~/.cache/helm` and `~/.local/share/helm`, and Helm 4 can rewrite `repository.yaml`
+in a shape Helm 3 will not read. If you hit that, `helm3 repo update` rewrites it
+back.
+
 ### `home`
 
 - **zstyle:** `zstyle ':omz:plugins:tupperclaude' home <path>`
@@ -906,8 +978,9 @@ x86_64 image.
 
 **Something else, or you're not sure where a failure is coming from** — run
 `claude-docker-doctor`. It runs every preflight check and prints a fix for each failing
-one, then the resolved configuration — version, `network`, state root, `aws`,
-`machine-md`, plus `op-ref` when one is set and `dockerfile` when it is overridden. The
+one, then the resolved configuration — version, `network`, state root, `aws`, `gcloud`,
+`k8s`, `helm`, `machine-md`, plus `op-ref` when one is set and `dockerfile` when it is
+overridden. The
 whole output is a good bug report as it stands; you do not need to describe your
 configuration separately.
 

@@ -408,6 +408,22 @@ check "kubeconfig: the ~/.kube directory itself is never mounted" $? "got: $repl
 KUBECONFIG="/one/path:/another" _claude_docker_run arm64 base 2>&1 1>/dev/null | command grep -q 'several files'
 check "kubeconfig: a multi-path KUBECONFIG falls back and says so" $?
 
+# A relative KUBECONFIG passes the -f test and then reaches docker as
+# `-v ./name:...`, which it refuses with a message about volume names — so the
+# fallback happens here, where there is room to explain it.
+print -r -- 'apiVersion: v1' >"$TC_TEST_WORKDIR/relative-kubeconfig"
+KUBECONFIG="relative-kubeconfig" _claude_docker_run arm64 base 2>&1 1>/dev/null \
+    | command grep -q 'relative path'
+check "kubeconfig: a relative KUBECONFIG falls back and says so" $?
+
+reset_docker_log
+KUBECONFIG="relative-kubeconfig" _claude_docker_run arm64 base >/dev/null 2>&1
+load_docker_log
+records_matching run -it --rm
+[[ $reply[1] != *"-v"*"relative-kubeconfig:/run/host-kube/config"* ]]
+check "kubeconfig: and the relative path never reaches docker" $? "got: $reply[1]"
+command rm -f -- "$TC_TEST_WORKDIR/relative-kubeconfig"
+
 zstyle -d ':omz:plugins:tupperclaude' k8s
 command rm -rf "$HOME/.kube"
 
@@ -522,6 +538,50 @@ mmd_now="$(command cat $mmd 2>/dev/null)"
 check "MACHINE.md: a user's own file survives the exit cleanup" $? \
     "got: $mmd_now"
 
+command rm -f -- $mmd
+
+# The marker must describe the TOOLS too, not just image/variant/network. The
+# rewrite short-circuit compares markers alone: with the tool answers left out,
+# two runs in the same directory with different options produce different bodies
+# behind an identical marker, so the file is never refreshed and Claude is told
+# it has kubectl when it does not. That shipped once.
+#
+# The exit cleanup would delete the evidence, and it is skipped only when
+# another sandbox is still running in this directory — so claim there is one.
+# It must carry the dir label WITHOUT answering to this sandbox's name, or the
+# run aborts at the "already running" check before writing anything.
+export FAKE_DOCKER_PS_DB="other|abc123|running|Up 1 minute|1 minute|tupperclaude.dir=$PWD"
+
+command rm -f -- $mmd
+_claude_docker_run arm64 base >/dev/null 2>&1
+local mmd_off="$(command cat $mmd 2>/dev/null)"
+
+zstyle ':omz:plugins:tupperclaude' k8s on
+zstyle ':omz:plugins:tupperclaude' helm both
+_claude_docker_run arm64 base >/dev/null 2>&1
+local mmd_on="$(command cat $mmd 2>/dev/null)"
+
+[[ $mmd_on == *'k8s helmboth'* ]]
+check "MACHINE.md: the marker records the resolved tool answers" $? \
+    "got: ${mmd_on%%$'\n'*}"
+
+[[ $mmd_on != $mmd_off ]]
+check "MACHINE.md: a run with different tool options refreshes the file" $? \
+    "body unchanged after turning k8s on"
+
+[[ $mmd_on == *kubectl* && $mmd_off != *kubectl* ]]
+check "MACHINE.md: the toolchain list follows the options" $? \
+    "kubectl must appear only in the k8s-on body"
+
+# gcloud is optional now, so the credentials sentence must stop claiming it
+# unconditionally — it named gcloud even on an image built without it.
+[[ $mmd_off != *gcloud* ]]
+check "MACHINE.md: an off tool is not named in the body" $? \
+    "got: $mmd_off"
+
+zstyle -d ':omz:plugins:tupperclaude' k8s
+zstyle -d ':omz:plugins:tupperclaude' helm
+unset FAKE_DOCKER_PS_DB
 command rm -f -- $mmd
 
 # --- introspection flags must not start a sandbox ---------------------------

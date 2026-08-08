@@ -301,6 +301,18 @@ if require_fn claude-docker-doctor; then
     [[ $out == *'config:'* && $out == *network*tailscale* ]]
     check "doctor: prints the resolved configuration for bug reports" $? "got: $out"
 
+    # Every settable option must appear, because doctor's output is what a bug
+    # report is built from: an option that can be set but never shown is one
+    # nobody can be asked about. The tool rows come from $_tupperclaude_tools,
+    # so they cannot silently go missing — helm is outside that array and can.
+    local _t
+    for _t in $_tupperclaude_tools; do
+        [[ $out == *"$_t"* ]]
+        check "doctor: the config block names the $_t option" $? "got: $out"
+    done
+    [[ $out == *helm*3* ]]
+    check "doctor: the config block names the helm option and its value" $? "got: $out"
+
     # doctor is read-only: it may inspect, but must never run, build, stop,
     # remove or prune anything. This is the assertion that keeps it safe to run
     # against a machine with live sidecars on it.

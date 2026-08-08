@@ -66,6 +66,11 @@
 #                          matched, plus the two-word forms "image inspect",
 #                          "image prune", "volume ls", "volume rm".
 #   FAKE_DOCKER_FAIL_STATUS  exit status used for a simulated failure (default 1).
+#   FAKE_DOCKER_FAIL_PARSE non-empty = the build's post-build `run ... bash -n
+#                          /usr/local/bin/start.sh` check reports a syntax
+#                          error. Separate from FAKE_DOCKER_FAIL="run", which
+#                          would fail the sandbox launch too and so never let
+#                          the guard's own branch run.
 
 emulate -L zsh
 setopt local_options noksharrays
@@ -485,6 +490,14 @@ rm)
 
 run)
     fail_if_requested run
+    # The build's post-build `docker run ... bash -n /usr/local/bin/start.sh`
+    # parse check. It needs a knob of its own: FAKE_DOCKER_FAIL="run" would also
+    # fail the sandbox launch, so the guard's branch would never be reached.
+    if [[ -n ${FAKE_DOCKER_FAIL_PARSE:-} ]] \
+       && (( ${argv[(Ie)bash]} )) && (( ${argv[(Ie)-n]} )); then
+        print -u2 "start.sh: line 1: syntax error: unexpected end of file"
+        exit 2
+    fi
     # A `run --name X` un-removes X, so a rm-then-recreate sequence leaves the
     # inventory consistent for anything that inspects afterwards.
     local ri=1 newname=''

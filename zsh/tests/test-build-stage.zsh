@@ -279,6 +279,64 @@ check "build/playwright: the aws option does NOT add --build-arg INCLUDE_AWS" $?
 
 zstyle -d ':omz:plugins:tupperclaude' aws
 
+# --- every tool in the table, not just aws ------------------------------------
+#
+# The assertions above name aws literally, so they pass whether the build loops
+# over $_tupperclaude_tools or over the single word `aws` — which is exactly the
+# mutation that would ship gcloud and k8s with no build-arg and no label. This
+# block derives its expectations from the table, so a tool added to the array
+# and forgotten in the build fails here.
+_t=''; _arg=''; _label=''
+for _t in $_tupperclaude_tools; do
+    _arg="$(_claude_docker_tool arg $_t)"
+    _label="$(_claude_docker_tool label $_t)"
+
+    zstyle -d ':omz:plugins:tupperclaude' $_t
+    reset_docker_log
+    command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+    _claude_docker_build arm64 base >/dev/null 2>&1
+    load_docker_log
+    records_matching build "$_arg=1"
+    (( ${#reply} == 0 ))
+    check "build/base: no --build-arg $_arg while $_t is off" $? "${#reply} record(s)"
+    records_matching build
+    if (( ${#reply} == 1 )); then
+        argv_has_pair "$reply[1]" --label "$_label=false"
+        check "build/base: stamps $_label=false while $_t is off" $?
+    else
+        not_ok "build/base: one build record for the $_t label" "${#reply} record(s)"
+    fi
+
+    zstyle ':omz:plugins:tupperclaude' $_t on
+    reset_docker_log
+    command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+    _claude_docker_build arm64 base >/dev/null 2>&1
+    load_docker_log
+    records_matching build "$_arg=1"
+    (( ${#reply} == 1 ))
+    check "build/base: the $_t option adds --build-arg $_arg=1" $? "${#reply} record(s)"
+    records_matching build
+    if (( ${#reply} == 1 )); then
+        argv_has_pair "$reply[1]" --label "$_label=true"
+        check "build/base: stamps $_label=true when $_t is on" $?
+    else
+        not_ok "build/base: one build record for the $_t label" "${#reply} record(s)"
+    fi
+
+    # Dockerfile.playwright declares none of these ARGs — the tools come from the
+    # base image it is FROM'd on. Passing them anyway earns the unconsumed
+    # build-arg warning at the end of a long build.
+    reset_docker_log
+    command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+    _claude_docker_build arm64 playwright >/dev/null 2>&1
+    load_docker_log
+    records_matching build "$_arg=1"
+    (( ${#reply} == 0 ))
+    check "build/playwright: no --build-arg $_arg even with $_t on" $? "${#reply} record(s)"
+
+    zstyle -d ':omz:plugins:tupperclaude' $_t
+done
+
 # --- the helm major: a value, not a flag --------------------------------------
 #
 # helm is deliberately outside $_tupperclaude_tools, so it needs its own
@@ -443,5 +501,30 @@ for r in "${reply[@]}"; do
 done
 (( bad_probe == 0 ))
 check "build: the tool-version probes are not interactive" $?
+
+# --- the start.sh parse guard -------------------------------------------------
+#
+# This exists because a quoting slip in the heredoc that writes start.sh once
+# shipped an image where EVERY container died with "unexpected EOF" — a build
+# that reported success and a sandbox that could not start. The guard only
+# earns its keep if its failure path works, and the fake docker succeeds at
+# everything by default, so without the knob below this block never executed.
+reset_docker_log
+command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+_claude_docker_build arm64 base >/dev/null 2>&1
+load_docker_log
+records_matching run bash -n /usr/local/bin/start.sh
+(( ${#reply} == 1 ))
+check "build: parse-checks start.sh in the image it just built" $? "${#reply} record(s)"
+
+reset_docker_log
+command rm -rf -- "$FAKE_DOCKER_CONTEXT_COPY"
+export FAKE_DOCKER_FAIL_PARSE=1
+out="$(_claude_docker_build arm64 base 2>&1)"
+(( $? != 0 ))
+check "build: a start.sh that does not parse fails the build" $?
+unset FAKE_DOCKER_FAIL_PARSE
+[[ $out == *"does not parse"* ]]
+check "build: and says so, rather than reporting a successful build" $? "got: $out"
 
 test_summary

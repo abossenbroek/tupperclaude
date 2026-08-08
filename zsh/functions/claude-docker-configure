@@ -206,7 +206,11 @@ done
 local helm_major=3
 if (( tool_enabled[k8s] )); then
     read -r "key?Which Helm major? 3 (default), 4, or both: "
-    case $key in
+    # Trimmed and lowercased first, so "Both" and "4 " are answers rather than
+    # typos. The build refuses anything it does not recognise, and being
+    # stricter here than there would hand someone a config that fails later.
+    key="${${key##[[:space:]]#}%%[[:space:]]#}"
+    case ${key:l} in
         4)    helm_major=4 ;;
         both) helm_major=both ;;
         # Anything unrecognised takes the default rather than re-asking: the
