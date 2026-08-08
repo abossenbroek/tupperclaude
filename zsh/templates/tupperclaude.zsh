@@ -65,8 +65,7 @@
 # ---------------------------------------------------------------------------
 # k8s — include kubectl, helm and k9s in the built image
 #
-# Also opens a `k9s` tmux window running live against your current context, and
-# mounts ~/.kube read-only.
+# Also opens a `k9s` tmux window running live against your current context.
 #
 # Env var: CLAUDE_DOCKER_INCLUDE_K8S
 # ---------------------------------------------------------------------------
