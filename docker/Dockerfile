@@ -453,7 +453,9 @@ RUN printf '%s\n' \
   '    # plugin, which does not exist here. Rewrite it to the bare binary and' \
   '    # let $PATH resolve it. Guarded alone, not around the copy above: a' \
   '    # kubeconfig with no such stanza is normal, a failed copy is not.' \
-  '    sed -i "s#[^\\"]*/google-cloud-sdk/bin/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g" ~/.kube/config || true' \
+  '    # The character class is path characters only, so a YAML-quoted value' \
+  '    # keeps its quotes; [^ ]* would swallow the opening one and strip it.' \
+  '    sed -i s#[A-Za-z0-9_./-]*/gke-gcloud-auth-plugin#gke-gcloud-auth-plugin#g ~/.kube/config || true' \
   'fi' \
   'if [ -d /run/host-linear ]; then' \
   '    mkdir -p ~/.config/linear' \
