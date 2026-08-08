@@ -91,15 +91,19 @@ release: ## Tag a release from main: make release VERSION=0.2.0
 	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null \
 	  && { echo "tag v$(VERSION) already exists"; exit 1; } || true
 	@$(MAKE) --no-print-directory check
-	@echo "$(VERSION)" > .version
-	@git add .version
-	@git commit -q -m "release: v$(VERSION)"
-	@git tag -s "v$(VERSION)" -m "v$(VERSION)" 2>/dev/null \
+	@# One shell: whether the bump was committed decides what the rollback below
+	@# may safely undo. .version can already hold VERSION when a tag was deleted
+	@# and re-cut, and committing nothing must not abort the release.
+	@echo "$(VERSION)" > .version; \
+	git add .version; \
+	if git diff --cached --quiet; then committed=0; \
+	else git commit -q -m "release: v$(VERSION)"; committed=1; fi; \
+	git tag -s "v$(VERSION)" -m "v$(VERSION)" 2>/dev/null \
 	  || { echo "cannot sign the tag — no signing key configured."; \
 	       echo "  git config gpg.format ssh"; \
 	       echo "  git config user.signingkey ~/.ssh/id_ed25519.pub"; \
 	       echo "then register that key at github.com/settings/ssh/new as a Signing Key."; \
-	       git reset -q --hard HEAD~1; exit 1; }
+	       [ "$$committed" = 1 ] && git reset -q --hard HEAD~1; exit 1; }
 	@echo ""
 	@echo "Tagged v$(VERSION). Push it to trigger the release:"
 	@echo "  git push origin main --follow-tags"
