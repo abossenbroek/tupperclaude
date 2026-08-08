@@ -18,9 +18,22 @@
 
 emulate -L zsh
 
+# The table itself lives here, not in the plugin shim, because these functions
+# are autoloadable on their own — pointing $fpath at zsh/functions without
+# sourcing the shim is a supported install and the first thing that happens on a
+# shared machine. With the array unset, every `for tool in $_tupperclaude_tools`
+# loop runs zero times: no build args, no labels, no wizard questions, and a
+# build that reports success having installed none of the tools that were asked
+# for. Silence is the whole problem, so the definition sits where every consumer
+# already reaches.
+(( ${+_tupperclaude_tools} )) || typeset -ga _tupperclaude_tools=(aws gcloud k8s)
+
 local action=$1 tool=$2
 
 case $action in
+    # Takes no tool. Its real work is the guard above: callers that loop over the
+    # table call this first so the array exists even when the shim did not run.
+    list)    print -r -l -- $_tupperclaude_tools ;;
     enabled) _claude_docker_opt -b "$tool" "CLAUDE_DOCKER_INCLUDE_${(U)tool}" ;;
     label)   print -r -- "tupperclaude.$tool" ;;
     arg)     print -r -- "INCLUDE_${(U)tool}" ;;

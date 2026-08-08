@@ -84,13 +84,15 @@
 #   4      Helm 4
 #   both   both, as `helm3` and `helm4`; bare `helm` is Helm 3
 #
-# Only consulted when k8s is on. Both majors are maintained and charts written
-# for 3 do not all render under 4, hence the choice.
+# Only changes the image when k8s is on, but the value is checked on every
+# build: a typo is a typo whether or not helm is being installed. Both majors
+# are maintained and charts written for 3 do not all render under 4, hence the
+# choice.
 #
 # Under `both` the two share ~/.config/helm, ~/.cache/helm and
 # ~/.local/share/helm: whichever runs first owns repository.yaml, and Helm 4 can
-# rewrite it in a shape Helm 3 will not read. Set HELM_CONFIG_HOME per major if
-# that bites.
+# rewrite it in a shape Helm 3 will not read. `helm3 repo update` rewrites it
+# back; set HELM_CONFIG_HOME per major to keep them apart for good.
 #
 # Env var: CLAUDE_DOCKER_HELM
 # ---------------------------------------------------------------------------

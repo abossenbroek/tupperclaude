@@ -42,6 +42,9 @@ _claude_docker_check image "$_tc_image" "$_tc_build_cmd" || {
 # existed report nothing, and blaming them for an invisible mismatch would make
 # this noise on every launch.
 local _tc_tool built want_label
+# Defines $_tupperclaude_tools when this function was autoloaded without the
+# plugin shim; without it the loop below runs zero times, in silence.
+_claude_docker_tool list >/dev/null
 for _tc_tool in $_tupperclaude_tools; do
     built="$(command docker image inspect \
         -f "{{index .Config.Labels \"$(_claude_docker_tool label $_tc_tool)\"}}" \
@@ -440,6 +443,13 @@ if _claude_docker_tool enabled k8s; then
             # about neither an absolute path nor a valid volume name.
             _claude_docker_warn "KUBECONFIG is a relative path; mounting ~/.kube/config instead" \
                 "point KUBECONFIG at an absolute path to mount that one: ${KUBECONFIG:a}"
+        elif [[ ! -f $KUBECONFIG ]]; then
+            # Absolute and single, but not a file. Falling through would assign it,
+            # fail the -f test below, and drop the mount with nothing said —
+            # leaving the sandbox with no kubeconfig at all when the default one
+            # was sitting there and would have worked.
+            _claude_docker_warn "KUBECONFIG names no readable file; mounting ~/.kube/config instead" \
+                "unset KUBECONFIG, or point it at a file that exists: $KUBECONFIG"
         else
             kubeconfig="$KUBECONFIG"
         fi

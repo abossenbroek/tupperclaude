@@ -38,8 +38,9 @@ for arg in "$@"; do
             print -r -- 'claude-docker-configure — first-run setup wizard'
             print -r -- ''
             print -r -- 'Checks your prerequisites, asks how you want the sandbox to reach the'
-            print -r -- 'network and whether to include the AWS CLI, then writes the answers to'
-            print -r -- '~/.tupperclaude.zsh and offers to source it from ~/.zshrc.'
+            print -r -- 'network and which optional toolchains to build into the image, then'
+            print -r -- 'writes the answers to ~/.tupperclaude.zsh and offers to source it from'
+            print -r -- '~/.zshrc.'
             print -r -- ''
             print -r -- 'Needs an interactive terminal. To configure without it, set the zstyle'
             print -r -- 'options by hand — see zsh/templates/tupperclaude.zsh for the full list.'
@@ -190,6 +191,9 @@ fi
 # nobody asked for.
 local -A tool_enabled
 local _tc_tool
+# Defines $_tupperclaude_tools when this function was autoloaded without the
+# plugin shim; without it the loop below runs zero times, in silence.
+_claude_docker_tool list >/dev/null
 for _tc_tool in $_tupperclaude_tools; do
     read -r "key?Include $(_claude_docker_tool desc $_tc_tool) in the image? [y/N]: "
     if [[ $key == (y|Y|yes|YES) ]]; then
