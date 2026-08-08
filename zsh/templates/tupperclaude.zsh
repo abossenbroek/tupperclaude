@@ -41,6 +41,9 @@
 # ---------------------------------------------------------------------------
 # aws — include the AWS CLI v2 in the built image
 #
+# Also opens an `aws` tmux window with `aws sso login` pre-typed, ready for a
+# single Enter when the lease expires.
+#
 # Adds build time and image size, so it defaults to off. Takes effect on the
 # next `claude-docker-build-arm` / `claude-docker-build-amd64`, not
 # retroactively on an image already built.
@@ -48,6 +51,26 @@
 # Env var: CLAUDE_DOCKER_INCLUDE_AWS
 # ---------------------------------------------------------------------------
 # zstyle ':omz:plugins:tupperclaude' aws off
+
+# ---------------------------------------------------------------------------
+# gcloud — include the Google Cloud SDK in the built image
+#
+# Also opens a `gcloud` tmux window with the ADC login pre-typed. With k8s on
+# as well, the image additionally carries gke-gcloud-auth-plugin.
+#
+# Env var: CLAUDE_DOCKER_INCLUDE_GCLOUD
+# ---------------------------------------------------------------------------
+# zstyle ':omz:plugins:tupperclaude' gcloud off
+
+# ---------------------------------------------------------------------------
+# k8s — include kubectl, helm and k9s in the built image
+#
+# Also opens a `k9s` tmux window running live against your current context, and
+# mounts ~/.kube read-only.
+#
+# Env var: CLAUDE_DOCKER_INCLUDE_K8S
+# ---------------------------------------------------------------------------
+# zstyle ':omz:plugins:tupperclaude' k8s off
 
 # ---------------------------------------------------------------------------
 # home — host directory holding all tupperclaude state

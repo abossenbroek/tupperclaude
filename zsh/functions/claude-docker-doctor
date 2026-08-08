@@ -69,13 +69,22 @@ print -r -- ""
 # billed as "paste the whole thing into a bug report", so an option missing from
 # it is an option nobody can be asked about — which is how `machine-md` and
 # `dockerfile` came to be settable but invisible.
-local network home_dir op_ref dockerfile aws_label=no machine_md_label=on
+local network home_dir op_ref dockerfile machine_md_label=on
 network="$(_claude_docker_opt network CLAUDE_DOCKER_NETWORK tailscale)"
 home_dir="$(_claude_docker_opt home CLAUDE_DOCKER_HOME "$HOME/.config/claude-docker")"
 op_ref="$(_claude_docker_opt op-ref CLAUDE_DOCKER_OP_TS_REF '')"
 dockerfile="$(_claude_docker_opt dockerfile CLAUDE_DOCKER_DOCKERFILE '')"
-_claude_docker_opt -b aws CLAUDE_DOCKER_INCLUDE_AWS && aws_label=yes
 _claude_docker_opt -b machine-md CLAUDE_DOCKER_MACHINE_MD 1 || machine_md_label=off
+
+local -A tool_label
+local _tc_tool
+for _tc_tool in $_tupperclaude_tools; do
+    if _claude_docker_tool enabled $_tc_tool; then
+        tool_label[$_tc_tool]=yes
+    else
+        tool_label[$_tc_tool]=no
+    fi
+done
 
 # Build the check list. `checks_required[i]` distinguishes a real failure
 # from something informational — see the file header for which is which.
@@ -198,7 +207,9 @@ print -r -- "config:"
 printf '  %-11s %s\n' "version" "${TUPPERCLAUDE_VERSION:-unknown}"
 printf '  %-11s %s\n' "network" "$network"
 printf '  %-11s %s\n' "state root" "$home_dir"
-printf '  %-11s %s\n' "aws" "$aws_label"
+for _tc_tool in $_tupperclaude_tools; do
+    printf '  %-11s %s\n' "$_tc_tool" "$tool_label[$_tc_tool]"
+done
 printf '  %-11s %s\n' "machine-md" "$machine_md_label"
 [[ -n $op_ref ]] && printf '  %-11s %s\n' "op-ref" "$op_ref"
 # Shown only when overridden: the default is a path inside the plugin, which is

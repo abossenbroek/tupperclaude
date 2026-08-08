@@ -245,6 +245,45 @@ check "aws mismatch (playwright): the fix does NOT name the playwright builder" 
 zstyle -d ':omz:plugins:tupperclaude' aws
 unset FAKE_DOCKER_IMAGE_LABELS
 
+# --- every optional tool gets the same treatment, not just aws ----------------
+#
+# aws was hand-written in seven places; gcloud and k8s were added by making all
+# three derive from $_tupperclaude_tools. Asserting the same contract for every
+# entry of that array is what stops a fourth tool from being added to the list
+# and silently skipping the mismatch check — the failure aws itself had.
+
+_claude_docker_ctx arm64 base || exit 1
+
+local tool tool_out
+for tool in $_tupperclaude_tools; do
+    export FAKE_DOCKER_IMAGE_LABELS="$_tc_image=tupperclaude.$tool=false"
+    zstyle ':omz:plugins:tupperclaude' $tool on
+    tool_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+    check "$tool mismatch: the run still succeeds — this is a warning, not a refusal" $?
+    [[ $tool_out == *"$tool option is on"*"built with $tool=false"* ]]
+    check "$tool mismatch: the warning states both the option and the label it disagrees with" $? "got: $tool_out"
+    [[ $tool_out == *claude-docker-build-arm* ]]
+    check "$tool mismatch: the warning names the rebuild command" $? "got: $tool_out"
+
+    # The reverse direction too: an option turned OFF against an image built
+    # WITH the tool is just as much a mismatch, and only checking one direction
+    # would let a comparison that always reports "on" pass.
+    export FAKE_DOCKER_IMAGE_LABELS="$_tc_image=tupperclaude.$tool=true"
+    zstyle ':omz:plugins:tupperclaude' $tool off
+    tool_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+    [[ $tool_out == *"$tool option is off"*"built with $tool=true"* ]]
+    check "$tool mismatch: an option turned off against an image built with it also warns" $? "got: $tool_out"
+
+    # Agreement is silence.
+    zstyle ':omz:plugins:tupperclaude' $tool on
+    tool_out="$(_claude_docker_run arm64 base 2>&1 1>/dev/null)"
+    [[ $tool_out != *"$tool option"* ]]
+    check "$tool match: no warning when the image agrees with the option" $? "got: $tool_out"
+
+    zstyle -d ':omz:plugins:tupperclaude' $tool
+    unset FAKE_DOCKER_IMAGE_LABELS
+done
+
 # --- docker-sock, and the gid that travels with it ----------------------------
 #
 # This option decides whether the sandbox is a security boundary at all: the
